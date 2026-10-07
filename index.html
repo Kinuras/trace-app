@@ -1,511 +1,153 @@
 <!DOCTYPE html>
-<html lang="en">
+<html>
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>TraceLock AR - Paper Tracking Tracing App</title>
-    <!-- Tailwind CSS for modern mobile UI -->
-    <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4"></script>
-    <!-- OpenCV.js for real-time paper contour detection and tracking -->
-    <script async src="https://docs.opencv.org/4.8.0/opencv.js"></script>
+    <title>AR Image Tracer</title>
     <style>
-        body, html {
+        body {
             margin: 0;
-            padding: 0;
-            width: 100%;
-            height: 100%;
-            overflow: hidden;
-            background-color: #0f172a;
-            font-family: system-ui, -apple-system, sans-serif;
-            touch-action: none;
+            overflow: hidden; /* Hide scrollbars */
         }
-        #videoElement {
+        canvas {
+            display: block;
+            width: 100vw;
+            height: 100vh;
+        }
+        #controls {
             position: absolute;
-            top: 0;
-            left: 0;
-            width: 100%;
-            height: 100%;
-            object-fit: cover;
-            z-index: 1;
-        }
-        #cvCanvas {
-            display: none;
-        }
-        #arCanvas {
-            position: absolute;
-            top: 0;
-            left: 0;
-            width: 100%;
-            height: 100%;
-            z-index: 2;
-            pointer-events: none;
-        }
-        .glass-panel {
-            background: rgba(15, 23, 42, 0.75);
-            backdrop-filter: blur(12px);
-            -webkit-backdrop-filter: blur(12px);
-            border: 1px solid rgba(255, 255, 255, 0.1);
-        }
-        .pulse-glow {
-            animation: pulse-red 2s infinite;
-        }
-        @keyframes pulse-red {
-            0% { box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.7); }
-            70% { box-shadow: 0 0 0 12px rgba(239, 68, 68, 0); }
-            100% { box-shadow: 0 0 0 0 rgba(239, 68, 68, 0); }
+            bottom: 10px;
+            left: 10px;
+            background-color: rgba(255, 255, 255, 0.8);
+            padding: 10px;
+            border-radius: 5px;
         }
     </style>
 </head>
 <body>
-
-    <!-- Camera Feed -->
-    <video id="videoElement" autoplay playsinline muted></video>
-    
-    <!-- Hidden Canvas for OpenCV processing -->
-    <canvas id="cvCanvas"></canvas>
-
-    <!-- AR Canvas where tracing image is warped and rendered -->
-    <canvas id="arCanvas"></canvas>
-
-    <!-- Top Status / Header Bar -->
-    <div class="absolute top-0 left-0 right-0 z-20 p-4 flex justify-between items-center pointer-events-none">
-        <div id="statusBadge" class="glass-panel px-3 py-1.5 rounded-full text-xs font-medium text-amber-300 flex items-center gap-2 pointer-events-auto">
-            <span class="w-2 h-2 rounded-full bg-amber-400 animate-ping"></span>
-            <span id="statusText">Camera Active - Load Image to Trace</span>
-        </div>
-        <div class="flex gap-2 pointer-events-auto">
-            <label class="glass-panel text-white px-3 py-1.5 rounded-full text-xs font-medium cursor-pointer flex items-center gap-1 active:scale-95 transition">
-                📂 <span>Load Image</span>
-                <input type="file" id="imageLoader" accept="image/*" class="hidden">
-            </label>
-            <button id="toggleCamBtn" class="glass-panel text-white p-2 rounded-full text-xs active:scale-95 transition" title="Switch Camera">
-                🔄
-            </button>
-        </div>
+    <canvas id="canvas"></canvas>
+    <div id="controls">
+        <label for="opacity">Opacity:</label>
+        <input type="range" id="opacity" min="0" max="1" value="0.5" step="0.01">
+        <button id="invert">Invert</button>
+        <button id="grayscale">Grayscale</button>
+        <button id="reset">Reset</button>
+        <button id="lock">Lock</button>
     </div>
 
-    <!-- Manual Calibration Overlay (If auto paper detection needs helper) -->
-    <div id="calibrationOverlay" class="absolute inset-0 z-15 bg-black/40 backdrop-blur-xs hidden flex flex-col items-center justify-center p-6 text-center">
-        <div class="glass-panel p-6 rounded-2xl max-w-sm w-full text-white space-y-4">
-            <h3 class="text-lg font-bold">Manual Paper Corner Setup</h3>
-            <p class="text-xs text-slate-300">Tap the 4 corners of your physical paper in order: <br><b>Top-Left → Top-Right → Bottom-Right → Bottom-Left</b></p>
-            <div id="cornerStepIndicator" class="text-xs font-semibold text-cyan-400">Step 1: Tap Top-Left Corner</div>
-            <button id="cancelCalibration" class="w-full bg-slate-700 py-2 rounded-xl text-xs font-medium">Cancel</button>
-        </div>
-    </div>
-
-    <!-- Bottom Interactive Control Dock -->
-    <div class="absolute bottom-0 left-0 right-0 z-20 p-4 pb-8 flex flex-col gap-3 pointer-events-none">
-        
-        <!-- Adjustment Sliders Panel -->
-        <div class="glass-panel rounded-2xl p-4 text-white space-y-3 pointer-events-auto max-w-md mx-auto w-full shadow-2xl">
-            <div class="flex justify-between items-center text-xs">
-                <span class="font-semibold text-slate-300">Image Opacity</span>
-                <span id="opacityVal">60%</span>
-            </div>
-            <input type="range" id="opacitySlider" min="0.05" max="1" step="0.05" value="0.6" class="w-full accent-cyan-500 cursor-pointer">
-
-            <div class="flex items-center justify-between pt-2 border-t border-slate-700/60">
-                <div class="flex gap-1.5">
-                    <button id="invertBtn" class="bg-slate-800 hover:bg-slate-700 px-3 py-1.5 rounded-xl text-xs font-medium transition active:scale-95">Invert 🌓</button>
-                    <button id="grayscaleBtn" class="bg-slate-800 hover:bg-slate-700 px-3 py-1.5 rounded-xl text-xs font-medium transition active:scale-95">B&W 👁️</button>
-                    <button id="resetTransformBtn" class="bg-slate-800 hover:bg-slate-700 px-3 py-1.5 rounded-xl text-xs font-medium transition active:scale-95">Reset ↺</button>
-                </div>
-                <button id="manualCalibrateBtn" class="bg-slate-800 text-cyan-300 px-3 py-1.5 rounded-xl text-xs font-medium transition active:scale-95">Manual Corners 📐</button>
-            </div>
-        </div>
-
-        <!-- Main Action: Lock to Paper Toggle -->
-        <div class="max-w-md mx-auto w-full pointer-events-auto">
-            <button id="lockPaperBtn" class="w-full py-3.5 px-6 rounded-2xl font-bold text-sm bg-gradient-to-r from-emerald-600 to-teal-600 text-white shadow-xl shadow-emerald-900/30 flex items-center justify-center gap-2 active:scale-98 transition">
-                <span id="lockIcon">🔒</span> <span id="lockBtnText">Lock to Paper (Auto AR Tracking)</span>
-            </button>
-        </div>
-    </div>
-
-    <!-- Application Script -->
     <script>
-        const video = document.getElementById('videoElement');
-        const arCanvas = document.getElementById('arCanvas');
-        const ctx = arCanvas.getContext('2d');
-        const cvCanvas = document.getElementById('cvCanvas');
-        const cvCtx = cvCanvas.getContext('2d');
+        const canvas = document.getElementById('canvas');
+        const controls = document.getElementById('controls');
+        const opacityInput = document.getElementById('opacity');
+        const invertButton = document.getElementById('invert');
+        const grayscaleButton = document.getElementById('grayscale');
+        const resetButton = document.getElementById('reset');
+        constLockButton = document.getElementById('lock');
 
-        let currentFacingMode = 'environment';
-        let stream = null;
-
-        // Image & Transformation state
-        let loadedImg = null;
-        let opacity = 0.6;
+        let img;
+        let quad = [
+            { x: 0, y: 0 },
+            { x: 0, y: 0 },
+            { x: 0, y: 0 },
+            { x: 0, y: 0 }
+        ];
+        let opacity = 0.5;
         let isInverted = false;
         let isGrayscale = false;
+        let isTracking = false;
+        let scale = 1.0; // Added scale to handle resizing
+        let offset_x = 0;
+        let offset_y = 0;
 
-        // Manual or Tracked 4-Corner AR Quad [TL, TR, BR, BL]
-        // Default to center screen box if uncalibrated
-        let quad = [
-            {x: 100, y: 150},
-            {x: 300, y: 150},
-            {x: 300, y: 450},
-            {x: 100, y: 450}
-        ];
-        let isLockedToPaper = false;
-        let manualCorners = [];
-        let isManualCalibrating = false;
 
-        // Touch Interaction State (when not locked)
-        let isDragging = false;
-        let startX = 0, startY = 0;
-        let initialPinchDist = null;
+        canvas.width = window.innerWidth;
+        canvas.height = window.innerHeight;
 
-        // Initialize Camera
-        async function initCamera() {
-            if (stream) {
-                stream.getTracks().forEach(track => track.stop());
-            }
-            try {
-                stream = await navigator.mediaDevices.getUserMedia({
-                    video: { facingMode: currentFacingMode, width: { ideal: 1280 }, height: { ideal: 720 } },
-                    audio: false
-                });
-                video.srcObject = stream;
-                await video.play();
-                resizeCanvases();
-            } catch (err) {
-                alert("Camera access error: " + err.message);
-            }
-        }
+        // Load the image
+        const image = new Image();
+        image.src = 'your_image.jpg'; // Replace with your image URL
+        image.onload = () => {
+            img = image;
+            initCamera();
+        };
 
-        function resizeCanvases() {
-            arCanvas.width = window.innerWidth;
-            arCanvas.height = window.innerHeight;
-            cvCanvas.width = 320; // low res for fast OpenCV processing
-            cvCanvas.height = 240;
-
-            if (!isLockedToPaper && loadedImg) {
-                // Initialize default box in center
-                let w = Math.min(window.innerWidth * 0.7, 300);
-                let h = w * (loadedImg.height / loadedImg.width);
-                let cx = (window.innerWidth - w) / 2;
-                let cy = (window.innerHeight - h) / 2;
-                quad = [
-                    {x: cx, y: cy},
-                    {x: cx + w, y: cy},
-                    {x: cx + w, y: cy + h},
-                    {x: cx, y: cy + h}
-                ];
-            }
-        }
-
-        window.addEventListener('resize', resizeCanvases);
-
-        // Load Sample or User Image
-        const imageLoader = document.getElementById('imageLoader');
-        imageLoader.addEventListener('change', (e) => {
-            const file = e.target.files[0];
-            if (!file) return;
-            const reader = new FileReader();
-            reader.onload = function(event) {
-                const img = new Image();
-                img.onload = function() {
-                    loadedImg = img;
-                    resizeCanvases();
-                    document.getElementById('statusText').textContent = "Image Loaded. Drag to position or Lock to Paper.";
-                }
-                img.src = event.target.result;
-            }
-            reader.readAsDataURL(file);
-        });
-
-        // Touch & Gesture controls for moving/scaling/rotating when unlocked
-        arCanvas.addEventListener('pointerdown', (e) => {
-            if (isLockedToPaper || isManualCalibrating || !loadedImg) return;
-            isDragging = true;
-            startX = e.clientX;
-            startY = e.clientY;
-        });
-
-        arCanvas.addEventListener('pointermove', (e) => {
-            if (!isDragging || isLockedToPaper || isManualCalibrating) return;
-            let dx = e.clientX - startX;
-            let dy = e.clientY - startY;
-            startX = e.clientX;
-            startY = e.clientY;
-
-            // Shift all quad points
-            quad.forEach(pt => {
-                pt.x += dx;
-                pt.y += dy;
-            });
-        });
-
-        arCanvas.addEventListener('pointerup', () => { isDragging = false; });
-        arCanvas.addEventListener('pointercancel', () => { isDragging = false; });
-
-        // Pinch to zoom and rotate using touch events
-        arCanvas.addEventListener('touchstart', (e) => {
-            if (e.touches.length === 2 && !isLockedToPaper && loadedImg) {
-                initialPinchDist = Math.hypot(
-                    e.touches[0].clientX - e.touches[1].clientX,
-                    e.touches[0].clientY - e.touches[1].clientY
-                );
-            }
-        });
-
-        arCanvas.addEventListener('touchmove', (e) => {
-            if (e.touches.length === 2 && initialPinchDist && !isLockedToPaper && loadedImg) {
-                let dist = Math.hypot(
-                    e.touches[0].clientX - e.touches[1].clientX,
-                    e.touches[0].clientY - e.touches[1].clientY
-                );
-                let factor = dist / initialPinchDist;
-                initialPinchDist = dist;
-
-                // Scale quad relative to center
-                let cx = (quad[0].x + quad[2].x) / 2;
-                let cy = (quad[0].y + quad[2].y) / 2;
-                quad.forEach(pt => {
-                    pt.x = cx + (pt.x - cx) * factor;
-                    pt.y = cy + (pt.y - cy) * factor;
-                });
-            }
-        });
-
-        // OpenCV Paper Contour Tracking Loop
-        function updateOpenCVPaperTracking() {
-            if (!isLockedToPaper || !window.cv || !cv.Mat) return;
-
-            try {
-                cvCtx.drawImage(video, 0, 0, cvCanvas.width, cvCanvas.height);
-                let src = cv.imread(cvCanvas);
-                let gray = new cv.Mat();
-                let blurred = new cv.Mat();
-                let thresh = new cv.Mat();
-
-                cv.cvtColor(src, gray, cv.COLOR.RGBA2GRAY);
-                cv.GaussianBlur(gray, blurred, new cv.Size(5, 5), 0);
-                cv.adaptiveThreshold(blurred, thresh, 255, cv.ADAPTIVE_THRESH_GAUSSIAN_C, cv.THRESH_BINARY, 11, 2);
-
-                let contours = new cv.MatVector();
-                let hierarchy = new cv.Mat();
-                cv.findContours(thresh, contours, hierarchy, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE);
-
-                let maxArea = 0;
-                let bestApprox = null;
-
-                for (let i = 0; i < contours.size(); ++i) {
-                    let cnt = contours.get(i);
-                    let area = cv.contourArea(cnt);
-                    if (area > (cvCanvas.width * cvCanvas.height * 0.15)) { // paper takes >15% of frame
-                        let peri = cv.arcLength(cnt, true);
-                        let approx = new cv.Mat();
-                        cv.approxPolyDP(cnt, approx, 0.02 * peri, true);
-                        if (approx.rows === 4 && area > maxArea) {
-                            maxArea = area;
-                            if (bestApprox) bestApprox.delete();
-                            bestApprox = approx;
-                        } else {
-                            approx.delete();
-                        }
-                    }
-                    cnt.delete();
-                }
-
-                if (bestApprox && maxArea > 0) {
-                    let scaleX = window.innerWidth / cvCanvas.width;
-                    let scaleY = window.innerHeight / cvCanvas.height;
-                    
-                    let pts = [];
-                    for (let i = 0; i < 4; i++) {
-                        pts.push({
-                            x: bestApprox.data32S[i * 2] * scaleX,
-                            y: bestApprox.data32S[i * 2 + 1] * scaleY
-                        });
-                    }
-                    // Smooth tracking transition (Lerp)
-                    for (let i = 0; i < 4; i++) {
-                        quad[i].x += (pts[i].x - quad[i].x) * 0.3;
-                        quad[i].y += (pts[i].y - quad[i].y) * 0.3;
-                    }
-                    bestApprox.delete();
-                }
-
-                src.delete(); gray.delete(); blurred.delete(); thresh.delete(); contours.delete(); hierarchy.delete();
-            } catch (err) {
-                console.error("OpenCV tracking error:", err);
-            }
-        }
-
-        // Manual Corner Tap Handler
-        arCanvas.addEventListener('click', (e) => {
-            if (!isManualCalibrating) return;
-            manualCorners.push({x: e.clientX, y: e.clientY});
-            if (manualCorners.length === 1) {
-                document.getElementById('cornerStepIndicator').textContent = "Step 2: Tap Top-Right Corner";
-            } else if (manualCorners.length === 2) {
-                document.getElementById('cornerStepIndicator').textContent = "Step 3: Tap Bottom-Right Corner";
-            } else if (manualCorners.length === 3) {
-                document.getElementById('cornerStepIndicator').textContent = "Step 4: Tap Bottom-Left Corner";
-            } else if (manualCorners.length === 4) {
-                quad = [...manualCorners];
-                isManualCalibrating = false;
-                document.getElementById('calibrationOverlay').classList.add('hidden');
-                isLockedToPaper = true;
-                updateLockUI(true);
-                manualCorners = [];
-            }
-        });
-
-        // Render Loop (Draws AR Tracing Overlay)
-        function renderLoop() {
-            ctx.clearRect(0, 0, arCanvas.width, arCanvas.height);
-
-            if (isLockedToPaper) {
-                updateOpenCVPaperTracking();
-            }
-
-            if (loadedImg) {
-                ctx.save();
-                ctx.globalAlpha = opacity;
-
-                // Apply filters if enabled
-                let filters = [];
-                if (isInverted) filters.push('invert(100%)');
-                if (isGrayscale) filters.push('grayscale(100%)');
-                if (filters.length > 0) ctx.filter = filters.join(' ');
-
-                // Simple Bilinear / Quad Warping approximation for tracing overlay
-                drawImageQuad(ctx, loadedImg, quad);
-                ctx.restore();
-            }
-
-            // Draw Quad Guide Border if unlocked or calibrating
-            if (!isLockedToPaper || isManualCalibrating) {
-                ctx.strokeStyle = isManualCalibrating ? '#38bdf8' : 'rgba(56, 189, 248, 0.6)';
-                ctx.lineWidth = 2;
-                ctx.setLineDash([6, 6]);
-                ctx.beginPath();
-                ctx.moveTo(quad[0].x, quad[0].y);
-                for (let i = 1; i < 4; i++) ctx.lineTo(quad[i].x, quad[i].y);
-                ctx.closePath();
-                ctx.stroke();
-                ctx.setLineDash([]);
-
-                // Draw corner handles
-                quad.forEach((pt, idx) => {
-                    ctx.fillStyle = '#38bdf8';
-                    ctx.beginPath();
-                    ctx.arc(pt.x, pt.y, 8, 0, Math.PI * 2);
-                    ctx.fill();
-                });
-            }
-
+        function initCamera() {
+            // Initialize the camera here, you can add more sophisticated tracking methods here
+            // This is a placeholder for more advanced camera tracking
             requestAnimationFrame(renderLoop);
         }
 
-        // Helper to draw image mapped across 4 quad points
-        function drawImageQuad(ctx, img, q) {
-            // High-performance subdivision mesh rendering for smooth perspective warp
-            const steps = 10;
-            for (let i = 0; i < steps; i++) {
-                for (let j = 0; j < steps; j++) {
-                    let u0 = i / steps, v0 = j / steps;
-                    let u1 = (i + 1) / steps, v1 = (j + 1) / steps;
+        function renderLoop() {
+            requestAnimationFrame(renderLoop);
 
-                    let p0 = getQuadPoint(q, u0, v0);
-                    let p1 = getQuadPoint(q, u1, v0);
-                    let p2 = getQuadPoint(q, u1, v1);
-                    let p3 = getQuadPoint(q, u0, v1);
+            // Clear the canvas
+            canvas.clearRect(0, 0, canvas.width, canvas.height);
 
-                    let imgW = img.width, imgH = img.height;
-                    
-                    ctx.save();
-                    ctx.beginPath();
-                    ctx.moveTo(p0.x, p0.y);
-                    ctx.lineTo(p1.x, p1.y);
-                    ctx.lineTo(p2.x, p2.y);
-                    ctx.lineTo(p3.x, p3.y);
-                    ctx.closePath();
-                    ctx.clip();
+            // Draw the image
+            drawImageQuad(img, quad, opacity, isInverted, isGrayscale, offset_x, offset_y, scale);
 
-                    // Affine approximation per cell
-                    let dx0 = p1.x - p0.x, dy0 = p1.y - p0.y;
-                    let dx1 = p3.x - p0.x, dy1 = p3.y - p0.y;
-
-                    ctx.transform(
-                        dx0 / (u1 - u0) / imgW, dy0 / (u1 - u0) / imgW,
-                        dx1 / (v1 - v0) / imgH, dy1 / (v1 - v0) / imgH,
-                        p0.x - (u0 * dx0 / (u1 - u0) + v0 * dx1 / (v1 - v0)),
-                        p0.y - (u0 * dy0 / (u1 - u0) + v0 * dy1 / (v1 - v0))
-                    );
-
-                    ctx.drawImage(img, 0, 0);
-                    ctx.restore();
-                }
-            }
+            // Update UI elements (this is simplified and could be done more efficiently)
+            updateUI();
         }
 
-        function getQuadPoint(q, u, v) {
-            // Bilinear interpolation across quad
-            let x = (1 - u) * (1 - v) * q[0].x + u * (1 - v) * q[1].x + u * v * q[2].x + (1 - u) * v * q[3].x;
-            let y = (1 - u) * (1 - v) * q[0].y + u * (1 - v) * q[1].y + u * v * q[2].y + (1 - u) * v * q[3].y;
-            return {x, y};
-        }
+        function updateUI() {
+            opacityInput.value = opacity;
 
-        // UI Event Listeners
-        const opacitySlider = document.getElementById('opacitySlider');
-        opacitySlider.addEventListener('input', (e) => {
-            opacity = parseFloat(e.target.value);
-            document.getElementById('opacityVal').textContent = Math.round(opacity * 100) + '%';
-        });
-
-        document.getElementById('invertBtn').addEventListener('click', () => { isInverted = !isInverted; });
-        document.getElementById('grayscaleBtn').addEventListener('click', () => { isGrayscale = !isGrayscale; });
-        document.getElementById('resetTransformBtn').addEventListener('click', () => { resizeCanvases(); });
-
-        const lockPaperBtn = document.getElementById('lockPaperBtn');
-        lockPaperBtn.addEventListener('click', () => {
-            isLockedToPaper = !isLockedToPaper;
-            updateLockUI(isLockedToPaper);
-        });
-
-        function updateLockUI(locked) {
-            const statusBadge = document.getElementById('statusBadge');
-            const statusText = document.getElementById('statusText');
-            if (locked) {
-                lockPaperBtn.className = "w-full py-3.5 px-6 rounded-2xl font-bold text-sm bg-gradient-to-r from-red-600 to-rose-600 text-white shadow-xl shadow-red-900/30 flex items-center justify-center gap-2 pulse-glow active:scale-98 transition";
-                document.getElementById('lockIcon').textContent = "🔓";
-                document.getElementById('lockBtnText').textContent = "Unlock / Free Position";
-                statusBadge.className = "glass-panel px-3 py-1.5 rounded-full text-xs font-medium text-emerald-300 flex items-center gap-2 pointer-events-auto border border-emerald-500/30";
-                statusText.textContent = "🔒 Locked to Paper (AR Tracking Active)";
+            if (isInverted) {
+                invertButton.textContent = 'Uninvert';
             } else {
-                lockPaperBtn.className = "w-full py-3.5 px-6 rounded-2xl font-bold text-sm bg-gradient-to-r from-emerald-600 to-teal-600 text-white shadow-xl shadow-emerald-900/30 flex items-center justify-center gap-2 active:scale-98 transition";
-                document.getElementById('lockIcon').textContent = "🔒";
-                document.getElementById('lockBtnText').textContent = "Lock to Paper (Auto AR Tracking)";
-                statusBadge.className = "glass-panel px-3 py-1.5 rounded-full text-xs font-medium text-amber-300 flex items-center gap-2 pointer-events-auto";
-                statusText.textContent = "Adjust position freely or Lock to Paper";
+                invertButton.textContent = 'Invert';
+            }
+
+            if (isGrayscale) {
+                grayscaleButton.textContent = 'UngrayScale';
+            } else {
+                grayscaleButton.textContent = 'Grayscale';
             }
         }
 
-        document.getElementById('manualCalibrateBtn').addEventListener('click', () => {
-            isManualCalibrating = true;
-            manualCorners = [];
-            document.getElementById('calibrationOverlay').classList.remove('hidden');
-            document.getElementById('cornerStepIndicator').textContent = "Step 1: Tap Top-Left Corner";
+        // Event Handlers
+        invertButton.addEventListener('click', () => {
+            isInverted = !isInverted;
+            updateUI();
         });
 
-        document.getElementById('cancelCalibration').addEventListener('click', () => {
-            isManualCalibrating = false;
-            document.getElementById('calibrationOverlay').classList.add('hidden');
+        grayscaleButton.addEventListener('click', () => {
+            isGrayscale = !isGrayscale;
+            updateUI();
         });
 
-        document.getElementById('toggleCamBtn').addEventListener('click', () => {
-            currentFacingMode = currentFacingMode === 'environment' ? 'user' : 'environment';
-            initCamera();
+        opacityInput.addEventListener('input', (e) => {
+            opacity = e.target.value;
+            updateUI();
         });
 
-        // Start everything
-        initCamera();
-        requestAnimationFrame(renderLoop);
+        resetButton.addEventListener('click', () => {
+            quad = [
+                { x: 0, y: 0 },
+                { x: 0, y: 0 },
+                { x: 0, y: 0 },
+                { x: 0, y: 0 }
+            ];
+            offset_x = 0;
+            offset_y = 0;
+            scale = 1.0;
+            updateUI();
+        });
+
+        LockButton.addEventListener('click', () => {
+            isTracking = !isTracking;
+            updateUI();
+        });
+
+
+        // (You would add code here to detect surface plane)
+        // For this example, we'll just add a simple manual adjustment system
+        canvas.addEventListener('mousedown', (e) => {
+            isTracking = false;
+            offset_x = e.clientX - canvas.offsetLeft;
+            offset_y = e.clientY - canvas.offsetTop;
+
+            //  Add more robust interaction logic here, potentially using mousemove and mouseup
+        });
     </script>
 </body>
 </html>
