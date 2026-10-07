@@ -21,9 +21,11 @@
             overscroll-behavior: none;
             margin: 0;
             overflow: hidden;
+            background-color: #020617;
+            color-scheme: dark; /* Forces native browser camera permission dialogs into a readable dark-friendly theme */
         }
         .glass-panel {
-            background: rgba(15, 23, 42, 0.85);
+            background: rgba(15, 23, 42, 0.9);
             backdrop-filter: blur(16px);
             -webkit-backdrop-filter: blur(16px);
             border: 1px solid rgba(255, 255, 255, 0.1);
@@ -31,7 +33,6 @@
         input[type=range] {
             accent-color: #6366f1;
         }
-        /* Hide default A-Frame UI spam if any */
         .a-enter-vr { display: none !important; }
     </style>
 </head>
@@ -44,30 +45,30 @@
         </a-assets>
 
         <a-camera gps-camera rotation-reader>
-            <a-ring color="#ff0000" radius-inner="0.02" radius-outer="0.03" position="0 0 -1"></a-ring>
+            <a-ring color="#6366f1" radius-inner="0.015" radius-outer="0.025" position="0 0 -1"></a-ring>
         </a-camera>
 
         <!-- The virtual AR image anchored on the floor/world space -->
         <a-image 
             id="ar-target-image" 
             src="#ar-asset-image" 
-            position="0 -1.5 -3" 
+            position="0 -1.2 -2.5" 
             rotation="-90 0 0" 
-            width="1.5" 
-            height="1.5" 
+            width="1.2" 
+            height="1.2" 
             visible="false">
         </a-image>
     </a-scene>
 
-    <!-- Fallback / 2D Screen Overlay Container for positioning before or alongside AR lock -->
+    <!-- UI Overlay Container -->
     <div id="workspace" class="absolute inset-0 overflow-hidden flex items-center justify-center pointer-events-none z-10">
         <!-- Placeholder when no image is uploaded -->
-        <div id="emptyState" class="absolute inset-0 flex flex-col items-center justify-center p-6 text-center z-20 pointer-events-auto bg-slate-950/90 backdrop-blur-md">
+        <div id="emptyState" class="absolute inset-0 flex flex-col items-center justify-center p-6 text-center z-20 pointer-events-auto bg-slate-950/95 backdrop-blur-md">
             <div class="w-20 h-20 rounded-full bg-indigo-600/20 border border-indigo-500/30 flex items-center justify-center mb-4 text-indigo-400 text-2xl animate-pulse">
                 <i class="fa-solid fa-cloud-arrow-up"></i>
             </div>
             <h2 class="text-xl font-bold mb-2">Upload a Reference Image</h2>
-            <p class="text-slate-400 text-sm max-w-xs mb-6">Select a sketch or photo to lock onto physical paper/floor for tracing.</p>
+            <p class="text-slate-400 text-sm max-w-xs mb-6">Select a sketch, line-art, or photo to lock onto your physical paper.</p>
             <label class="cursor-pointer bg-indigo-600 hover:bg-indigo-500 active:scale-95 transition text-white px-6 py-3 rounded-xl font-semibold shadow-lg shadow-indigo-600/30 flex items-center gap-2">
                 <i class="fa-solid fa-image"></i> Choose Image
                 <input type="file" id="imageUpload" accept="image/*" class="hidden">
@@ -108,6 +109,15 @@
                 <input type="range" id="opacityRange" min="10" max="100" value="70" class="w-full h-2 bg-slate-800 rounded-lg appearance-none cursor-pointer">
             </div>
 
+            <!-- Size / Scale Slider -->
+            <div class="space-y-1.5">
+                <div class="flex justify-between text-xs text-slate-400 font-medium">
+                    <span>Image Size (Fit to Paper)</span>
+                    <span id="scaleVal">1.2m</span>
+                </div>
+                <input type="range" id="scaleRange" min="0.2" max="3.0" step="0.1" value="1.2" class="w-full h-2 bg-slate-800 rounded-lg appearance-none cursor-pointer">
+            </div>
+
             <!-- Action Buttons Grid -->
             <div class="grid grid-cols-3 gap-2 pt-1">
                 <!-- Upload New -->
@@ -141,6 +151,7 @@
     <script>
         let state = {
             opacity: 0.7,
+            scaleSize: 1.2,
             isLocked: false,
             isInverted: false,
             isGrayscale: false,
@@ -155,6 +166,8 @@
         const lockBadge = document.getElementById('lockBadge');
         const opacityRange = document.getElementById('opacityRange');
         const opacityVal = document.getElementById('opacityVal');
+        const scaleRange = document.getElementById('scaleRange');
+        const scaleVal = document.getElementById('scaleVal');
         const invertBtn = document.getElementById('invertBtn');
         const grayscaleBtn = document.getElementById('grayscaleBtn');
         const minimizeBtn = document.getElementById('minimizeBtn');
@@ -164,7 +177,6 @@
         const arAssetImage = document.getElementById('ar-asset-image');
         const arTargetImage = document.getElementById('ar-target-image');
 
-        // File upload handler
         function handleImageUpload(e) {
             const file = e.target.files[0];
             if (!file) return;
@@ -173,8 +185,6 @@
             reader.onload = function(event) {
                 state.imageUrl = event.target.result;
                 arAssetImage.src = state.imageUrl;
-                
-                // Hide empty state once loaded
                 emptyState.classList.add('hidden');
             };
             reader.readAsDataURL(file);
@@ -183,15 +193,20 @@
         document.getElementById('imageUpload').addEventListener('change', handleImageUpload);
         document.getElementById('imageUploadSecondary').addEventListener('change', handleImageUpload);
 
-        // Opacity Slider
         opacityRange.addEventListener('input', (e) => {
             state.opacity = e.target.value / 100;
-            // Apply opacity via material property on the A-Frame entity
             arTargetImage.setAttribute('material', `opacity: ${state.opacity}`);
             opacityVal.textContent = e.target.value + '%';
         });
 
-        // Lock Image on Floor Logic (using A-Frame camera orientation & vectors)
+        scaleRange.addEventListener('input', (e) => {
+            state.scaleSize = parseFloat(e.target.value);
+            // Maintain square aspect or proportional sizing in A-Frame width/height
+            arTargetImage.setAttribute('width', state.scaleSize);
+            arTargetImage.setAttribute('height', state.scaleSize);
+            scaleVal.textContent = state.scaleSize.toFixed(1) + 'm';
+        });
+
         lockBtn.addEventListener('click', () => {
             if (!state.imageUrl) {
                 alert("Please upload an image first!");
@@ -205,24 +220,21 @@
             const direction = new THREE.Vector3();
             cameraEl.object3D.getWorldDirection(direction);
 
-            // Calculate floor coordinates in front of the camera view
-            const distance = 2; // 2 meters forward
+            const distance = 1.8; // Place slightly closer for comfortable tracing
             const targetX = position.x - (direction.x * distance);
             const targetZ = position.z - (direction.z * distance);
-            const floorY = position.y - 1.2; // Approximate height drop to floor level
+            const floorY = position.y - 1.0; 
 
-            // Update AR image position and make visible
             arTargetImage.setAttribute('position', `${targetX} ${floorY} ${targetZ}`);
             arTargetImage.setAttribute('visible', 'true');
 
             state.isLocked = true;
             lockBadge.classList.remove('hidden');
-            lockBtn.className = "w-full py-3.5 px-4 rounded-xl font-bold flex items-center justify-center gap-3 transition-all shadow-xl bg-rose-600 hover:bg-rose-500 active:scale-[0.98] text-white shadow-rose-600/40 ring-4 ring-rose-500/30 animate-pulse";
+            lockBtn.className = "w-full py-3.5 px-4 rounded-xl font-bold flex items-center justify-center gap-3 transition-all shadow-xl bg-rose-600 hover:bg-rose-500 active:scale-[0.98] text-white shadow-rose-600/40 ring-4 ring-rose-500/20 animate-pulse";
             lockIcon.className = "fa-solid fa-lock text-lg";
             lockText.textContent = "Relock / Update Position";
         });
 
-        // Invert Filter via Material / CSS filter fallback simulation on asset
         invertBtn.addEventListener('click', () => {
             state.isInverted = !state.isInverted;
             updateFilters();
@@ -241,12 +253,9 @@
             let filters = [];
             if (state.isInverted) filters.push('invert(100%)');
             if (state.isGrayscale) filters.push('grayscale(100%)');
-            
-            // Apply filter style to asset image element so AR texture picks it up
             arAssetImage.style.filter = filters.length > 0 ? filters.join(' ') : 'none';
         }
 
-        // Minimize Control Panel Toggle
         minimizeBtn.addEventListener('click', () => {
             state.minimized = !state.minimized;
             if (state.minimized) {
