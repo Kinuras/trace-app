@@ -31,6 +31,12 @@
         .tool:active { transform: scale(.95); }
         .tool.on { background:#4f46e5; color:#fff; }
         .tool i { font-size:.95rem; }
+        .dockBtn { width:2.5rem; height:2.5rem; border-radius:.75rem; color:#fff; font-size:.85rem;
+                   display:flex; align-items:center; justify-content:center;
+                   background:rgba(15,23,42,.7); border:1px solid rgba(255,255,255,.15);
+                   backdrop-filter:blur(6px); -webkit-backdrop-filter:blur(6px); transition:transform .1s; }
+        .dockBtn:active { transform:scale(.92); }
+        .dockBtn.on { background:rgba(225,29,72,.85); }
 
         #cam { position: fixed; inset: 0; width: 100%; height: 100%; object-fit: cover; z-index: 0; background: #000; transform-origin: center; }
         #stage { position: fixed; inset: 0; z-index: 1; touch-action: none; overflow: hidden; }
@@ -95,19 +101,20 @@
     <div id="trackBadge" class="fixed left-1/2 -translate-x-1/2 hidden z-50 px-4 py-2 rounded-full text-xs font-bold shadow-2xl pointer-events-none bg-slate-800 text-white"
          style="top: calc(env(safe-area-inset-top) + 1rem)"></div>
 
-    <!-- Floating unlock / show-controls button (only while locked) -->
-    <button id="unlockFab" class="fixed hidden z-50 bg-rose-600 text-white px-5 py-3 rounded-full text-sm font-bold shadow-2xl items-center gap-2 active:scale-95"
-            style="right:1rem; bottom: calc(env(safe-area-inset-bottom) + 1rem)">
-        <i class="fa-solid fa-lock"></i> Unlock
-    </button>
+    <!-- Small bottom dock, shown when the controls panel is closed -->
+    <div id="dock" class="fixed left-1/2 -translate-x-1/2 z-50 items-center gap-2"
+         style="display:none; bottom: calc(env(safe-area-inset-bottom) + .75rem); transition: opacity .2s">
+        <button id="dockReset" class="dockBtn" style="margin-right:1.25rem" title="Reset image position"><i class="fa-solid fa-rotate-left"></i></button>
+        <button id="dockControls" class="dockBtn" title="Open controls"><i class="fa-solid fa-sliders"></i></button>
+        <button id="dockLock" class="dockBtn" title="Lock to paper"><i class="fa-solid fa-lock-open"></i></button>
+    </div>
 
     <!-- Controls -->
     <div id="controlPanel" class="fixed left-3 right-3 max-w-md mx-auto glass-panel rounded-2xl p-3 shadow-2xl z-40" style="bottom: calc(env(safe-area-inset-bottom) + .75rem)">
         <div class="flex items-center justify-between mb-2">
-            <h1 class="font-semibold text-sm text-slate-200 flex items-center gap-2"><span class="w-2.5 h-2.5 rounded-full bg-indigo-500"></span>TraceLock <span class="text-[10px] font-normal text-slate-500">v7</span></h1>
+            <h1 class="font-semibold text-sm text-slate-200 flex items-center gap-2"><span class="w-2.5 h-2.5 rounded-full bg-indigo-500"></span>TraceLock <span class="text-[10px] font-normal text-slate-500">v8</span></h1>
             <div class="flex gap-2">
-                <button id="resetBtn" class="w-9 h-9 rounded-lg bg-slate-800 text-slate-300" title="Reset position"><i class="fa-solid fa-rotate-left"></i></button>
-                <button id="minimizeBtn" class="w-9 h-9 rounded-lg bg-slate-800 text-slate-300" title="Collapse"><i class="fa-solid fa-chevron-down transition-transform duration-300" id="minimizeIcon"></i></button>
+                <button id="minimizeBtn" class="w-9 h-9 rounded-lg bg-slate-800 text-slate-300" title="Close controls"><i class="fa-solid fa-chevron-down transition-transform duration-300" id="minimizeIcon"></i></button>
             </div>
         </div>
 
@@ -375,7 +382,7 @@
         $('invertBtn').addEventListener('click', () => toggle('inverted', 'invertBtn'));
         $('flipHBtn').addEventListener('click', () => toggle('flipH', 'flipHBtn'));
         $('flipVBtn').addEventListener('click', () => toggle('flipV', 'flipVBtn'));
-        $('resetBtn').addEventListener('click', () => { if (state.hasImage) resetPosition(); });
+        $('dockReset').addEventListener('click', () => { if (state.hasImage && !state.locked) resetPosition(); });
 
         /* ---------------- Paper tracking (pure JS, no downloads) ----------------
            Picks corner-like points on the paper, follows them frame-to-frame by patch
@@ -663,36 +670,39 @@
             badge('');
         }
 
+        /* ---------------- Lock + bottom dock ----------------
+           Controls panel open  -> panel visible, dock hidden.
+           Controls panel closed -> small dock: [Reset] [Controls] [Lock/Unlock].
+           While locked the dock is fainter and Reset is hidden; Controls still opens the
+           panel without unlocking. */
+        let panelOpen = true;
+        function updateUI() {
+            const locked = state.locked;
+            $('controlPanel').style.display = panelOpen ? '' : 'none';
+            $('dock').style.display = panelOpen ? 'none' : 'flex';
+            $('dock').style.opacity = locked ? '.5' : '.9';
+            $('sizeBar').style.display = locked ? 'none' : '';
+            $('dockReset').style.display = locked ? 'none' : '';
+            $('dockLock').classList.toggle('on', locked);
+            $('dockLock').innerHTML = locked ? '<i class="fa-solid fa-lock"></i>' : '<i class="fa-solid fa-lock-open"></i>';
+            $('dockLock').title = locked ? 'Unlock' : 'Lock to paper';
+            $('lockBtn').classList.toggle('bg-rose-600', locked); $('lockBtn').classList.toggle('bg-indigo-600', !locked);
+            $('lockBtn').innerHTML = locked ? '<i class="fa-solid fa-lock-open"></i> Unlock' : '<i class="fa-solid fa-lock"></i> Lock to Paper';
+        }
+        function setPanel(open) { panelOpen = open; updateUI(); }
         function setLocked(v) {
             if (v && !state.hasImage) { alert('Please choose an image first!'); return; }
             state.locked = v;
             stage.classList.toggle('locked', v);
-            $('controlPanel').style.display = v ? 'none' : '';
-            $('sizeBar').style.display = v ? 'none' : '';
-            updateFab();
+            if (v) panelOpen = false;   // locking tucks the panel away
+            updateUI();
             pts.clear(); last = null;
             if (v) startTracking(); else stopTracking();
         }
-        $('lockBtn').addEventListener('click', () => setLocked(true));
-        // Floating Lock/Unlock button: shown while locked (Unlock) or while the menu is
-        // collapsed (Lock), so you can lock without opening the menu and shaking the phone
-        function updateFab() {
-            const fab = $('unlockFab'), show = state.locked || minimized;
-            fab.classList.toggle('hidden', !show); fab.classList.toggle('flex', show);
-            fab.classList.toggle('bg-rose-600', state.locked); fab.classList.toggle('bg-indigo-600', !state.locked);
-            fab.innerHTML = state.locked ? '<i class="fa-solid fa-lock"></i> Unlock' : '<i class="fa-solid fa-lock-open"></i> Lock';
-            // when the collapsed menu is showing, sit above it
-            fab.style.bottom = state.locked ? 'calc(env(safe-area-inset-bottom) + 1rem)' : 'calc(env(safe-area-inset-bottom) + 5rem)';
-        }
-        $('unlockFab').addEventListener('click', () => setLocked(!state.locked));
-
-        let minimized = false;
-        $('minimizeBtn').addEventListener('click', () => {
-            minimized = !minimized;
-            updateFab();
-            $('panelContent').classList.toggle('hidden', minimized);
-            $('minimizeIcon').style.transform = minimized ? 'rotate(180deg)' : 'rotate(0deg)';
-        });
+        $('lockBtn').addEventListener('click', () => setLocked(!state.locked));
+        $('dockLock').addEventListener('click', () => setLocked(!state.locked));
+        $('dockControls').addEventListener('click', () => setPanel(true));
+        $('minimizeBtn').addEventListener('click', () => setPanel(false));
 
         addEventListener('resize', () => { if (state.hasImage) render(); });
 
