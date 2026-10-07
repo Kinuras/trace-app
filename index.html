@@ -16,27 +16,43 @@
     <script src="https://raw.githack.com/AR-js-org/AR.js/master/aframe/build/aframe-ar.js"></script>
 
     <style>
-        body {
-            font-family: 'Inter', sans-serif;
-            overscroll-behavior: none;
+        body, html {
             margin: 0;
+            padding: 0;
+            width: 100%;
+            height: 100%;
             overflow: hidden;
             background-color: #020617;
-            color-scheme: dark; /* Forces native browser camera permission dialogs into a readable dark-friendly theme */
+            font-family: 'Inter', sans-serif;
+            color-scheme: dark;
+            touch-action: none;
         }
         .glass-panel {
-            background: rgba(15, 23, 42, 0.9);
+            background: rgba(15, 23, 42, 0.88);
             backdrop-filter: blur(16px);
             -webkit-backdrop-filter: blur(16px);
-            border: 1px solid rgba(255, 255, 255, 0.1);
+            border: 1px solid rgba(255, 255, 255, 0.12);
         }
         input[type=range] {
             accent-color: #6366f1;
         }
+        /* Hide default A-Frame VR button */
         .a-enter-vr { display: none !important; }
+        
+        /* Force AR.js video and canvas to cover the entire screen cleanly */
+        .a-canvas {
+            width: 100% !important;
+            height: 100% !important;
+            position: absolute !important;
+            top: 0 !important;
+            left: 0 !important;
+        }
+        video {
+            object-fit: cover !important;
+        }
     </style>
 </head>
-<body class="h-full bg-slate-950 text-slate-100 overflow-hidden relative select-none">
+<body>
 
     <!-- AR Scene Background & Floor Lock Target -->
     <a-scene embedded arjs="sourceType: webcam; debugUIEnabled: false; trackingMethod: best;" vr-mode-ui="enabled: false" class="absolute inset-0 z-0">
@@ -52,7 +68,7 @@
         <a-image 
             id="ar-target-image" 
             src="#ar-asset-image" 
-            position="0 -1.2 -2.5" 
+            position="0 -1.0 -2.0" 
             rotation="-90 0 0" 
             width="1.2" 
             height="1.2" 
@@ -60,28 +76,25 @@
         </a-image>
     </a-scene>
 
-    <!-- UI Overlay Container -->
-    <div id="workspace" class="absolute inset-0 overflow-hidden flex items-center justify-center pointer-events-none z-10">
-        <!-- Placeholder when no image is uploaded -->
-        <div id="emptyState" class="absolute inset-0 flex flex-col items-center justify-center p-6 text-center z-20 pointer-events-auto bg-slate-950/95 backdrop-blur-md">
-            <div class="w-20 h-20 rounded-full bg-indigo-600/20 border border-indigo-500/30 flex items-center justify-center mb-4 text-indigo-400 text-2xl animate-pulse">
-                <i class="fa-solid fa-cloud-arrow-up"></i>
-            </div>
-            <h2 class="text-xl font-bold mb-2">Upload a Reference Image</h2>
-            <p class="text-slate-400 text-sm max-w-xs mb-6">Select a sketch, line-art, or photo to lock onto your physical paper.</p>
-            <label class="cursor-pointer bg-indigo-600 hover:bg-indigo-500 active:scale-95 transition text-white px-6 py-3 rounded-xl font-semibold shadow-lg shadow-indigo-600/30 flex items-center gap-2">
-                <i class="fa-solid fa-image"></i> Choose Image
-                <input type="file" id="imageUpload" accept="image/*" class="hidden">
-            </label>
+    <!-- Placeholder when no image is uploaded -->
+    <div id="emptyState" class="absolute inset-0 flex flex-col items-center justify-center p-6 text-center z-20 bg-slate-950/95 backdrop-blur-md">
+        <div class="w-20 h-20 rounded-full bg-indigo-600/20 border border-indigo-500/30 flex items-center justify-center mb-4 text-indigo-400 text-2xl animate-pulse">
+            <i class="fa-solid fa-cloud-arrow-up"></i>
         </div>
-
-        <!-- Lock Active Indicator Badge -->
-        <div id="lockBadge" class="absolute top-6 left-1/2 -translate-x-1/2 bg-rose-600/90 backdrop-blur-md text-white px-5 py-2 rounded-full text-xs font-bold uppercase tracking-wider shadow-2xl flex items-center gap-2.5 pointer-events-none hidden z-30 transition-all border border-rose-400/40 ring-4 ring-rose-500/20 animate-pulse">
-            <i class="fa-solid fa-lock text-sm"></i> 🔒 Locked to Floor / Paper
-        </div>
+        <h2 class="text-xl font-bold mb-2 text-white">Upload a Reference Image</h2>
+        <p class="text-slate-400 text-sm max-w-xs mb-6">Select a sketch, line-art, or photo to lock onto your physical paper.</p>
+        <label class="cursor-pointer bg-indigo-600 hover:bg-indigo-500 active:scale-95 transition text-white px-6 py-3 rounded-xl font-semibold shadow-lg shadow-indigo-600/30 flex items-center gap-2">
+            <i class="fa-solid fa-image"></i> Choose Image
+            <input type="file" id="imageUpload" accept="image/*" class="hidden">
+        </label>
     </div>
 
-    <!-- Control Panel Dock -->
+    <!-- Lock Active Indicator Badge -->
+    <div id="lockBadge" class="absolute top-6 left-1/2 -translate-x-1/2 bg-rose-600/90 backdrop-blur-md text-white px-5 py-2 rounded-full text-xs font-bold uppercase tracking-wider shadow-2xl flex items-center gap-2.5 pointer-events-none hidden z-30 transition-all border border-rose-400/40 ring-4 ring-rose-500/20 animate-pulse">
+        <i class="fa-solid fa-lock text-sm"></i> 🔒 Locked to Floor / Paper
+    </div>
+
+    <!-- Control Panel Dock (Fixed styling for mobile layout) -->
     <div id="controlPanel" class="absolute bottom-6 left-4 right-4 max-w-md mx-auto glass-panel rounded-2xl p-4 shadow-2xl z-40 transition-all duration-300">
         
         <!-- Panel Header -->
@@ -140,7 +153,7 @@
                 </button>
             </div>
 
-            <!-- Lock Image to Floor Button -->
+            <!-- Lock / Unlock Image Button -->
             <button id="lockBtn" class="w-full py-3.5 px-4 rounded-xl font-bold flex items-center justify-center gap-3 transition-all shadow-lg bg-indigo-600 hover:bg-indigo-500 active:scale-[0.98] text-white shadow-indigo-600/30">
                 <i class="fa-solid fa-location-crosshairs text-lg" id="lockIcon"></i>
                 <span id="lockText">Lock Image on Floor</span>
@@ -201,38 +214,50 @@
 
         scaleRange.addEventListener('input', (e) => {
             state.scaleSize = parseFloat(e.target.value);
-            // Maintain square aspect or proportional sizing in A-Frame width/height
             arTargetImage.setAttribute('width', state.scaleSize);
             arTargetImage.setAttribute('height', state.scaleSize);
             scaleVal.textContent = state.scaleSize.toFixed(1) + 'm';
         });
 
+        // Toggle Lock/Unlock Behavior properly
         lockBtn.addEventListener('click', () => {
             if (!state.imageUrl) {
                 alert("Please upload an image first!");
                 return;
             }
 
-            const cameraEl = document.querySelector('a-camera');
-            if (!cameraEl || !cameraEl.object3D) return;
+            state.isLocked = !state.isLocked;
 
-            const position = cameraEl.object3D.position;
-            const direction = new THREE.Vector3();
-            cameraEl.object3D.getWorldDirection(direction);
+            if (state.isLocked) {
+                // Lock Position in front of camera
+                const cameraEl = document.querySelector('a-camera');
+                if (cameraEl && cameraEl.object3D) {
+                    const position = cameraEl.object3D.position;
+                    const direction = new THREE.Vector3();
+                    cameraEl.object3D.getWorldDirection(direction);
 
-            const distance = 1.8; // Place slightly closer for comfortable tracing
-            const targetX = position.x - (direction.x * distance);
-            const targetZ = position.z - (direction.z * distance);
-            const floorY = position.y - 1.0; 
+                    const distance = 1.8;
+                    const targetX = position.x - (direction.x * distance);
+                    const targetZ = position.z - (direction.z * distance);
+                    const floorY = position.y - 1.0; 
 
-            arTargetImage.setAttribute('position', `${targetX} ${floorY} ${targetZ}`);
-            arTargetImage.setAttribute('visible', 'true');
+                    arTargetImage.setAttribute('position', `${targetX} ${floorY} ${targetZ}`);
+                }
+                arTargetImage.setAttribute('visible', 'true');
 
-            state.isLocked = true;
-            lockBadge.classList.remove('hidden');
-            lockBtn.className = "w-full py-3.5 px-4 rounded-xl font-bold flex items-center justify-center gap-3 transition-all shadow-xl bg-rose-600 hover:bg-rose-500 active:scale-[0.98] text-white shadow-rose-600/40 ring-4 ring-rose-500/20 animate-pulse";
-            lockIcon.className = "fa-solid fa-lock text-lg";
-            lockText.textContent = "Relock / Update Position";
+                lockBadge.classList.remove('hidden');
+                lockBtn.className = "w-full py-3.5 px-4 rounded-xl font-bold flex items-center justify-center gap-3 transition-all shadow-xl bg-rose-600 hover:bg-rose-500 active:scale-[0.98] text-white shadow-rose-600/40 ring-4 ring-rose-500/20 animate-pulse";
+                lockIcon.className = "fa-solid fa-lock text-lg";
+                lockText.textContent = "Unlock Position";
+            } else {
+                // Unlock Position so user can reposition or float it again
+                arTargetImage.setAttribute('visible', 'false');
+
+                lockBadge.classList.add('hidden');
+                lockBtn.className = "w-full py-3.5 px-4 rounded-xl font-bold flex items-center justify-center gap-3 transition-all shadow-lg bg-indigo-600 hover:bg-indigo-500 active:scale-[0.98] text-white shadow-indigo-600/30";
+                lockIcon.className = "fa-solid fa-location-crosshairs text-lg";
+                lockText.textContent = "Lock Image on Floor";
+            }
         });
 
         invertBtn.addEventListener('click', () => {
