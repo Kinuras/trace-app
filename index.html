@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
     <meta name="mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-capable" content="yes">
-    <title>TraceLock - Floor Tracing Assistant</title>
+    <title>TraceLock - Draw Overlay</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
@@ -20,53 +20,61 @@
             -webkit-touch-callout: none;
         }
         .glass-panel {
-            background: rgba(15, 23, 42, 0.9);
+            background: rgba(15, 23, 42, 0.92);
             backdrop-filter: blur(16px);
             -webkit-backdrop-filter: blur(16px);
             border: 1px solid rgba(255, 255, 255, 0.12);
         }
         input[type=range] { accent-color: #6366f1; }
+        .tool { background:#1e293b; color:#e2e8f0; padding:.6rem 0; border-radius:.75rem; display:flex; flex-direction:column; align-items:center; gap:.25rem; font-size:.7rem; font-weight:500; cursor:pointer; transition:transform .1s; }
+        .tool:active { transform: scale(.95); }
+        .tool.on { background:#4f46e5; color:#fff; }
+        .tool i { font-size:.95rem; }
 
-        #cam {
-            position: fixed; inset: 0; width: 100%; height: 100%;
-            object-fit: cover; z-index: 0; background: #000;
-        }
-        #stage {
-            position: fixed; inset: 0; z-index: 1;
-            touch-action: none; /* we handle all gestures ourselves */
-        }
+        #cam { position: fixed; inset: 0; width: 100%; height: 100%; object-fit: cover; z-index: 0; background: #000; transform-origin: center; }
+        #stage { position: fixed; inset: 0; z-index: 1; touch-action: none; overflow: hidden; }
         #stage.locked { pointer-events: none; }
-        #overlayImg {
-            position: absolute; left: 0; top: 0;
-            transform-origin: center center;
-            max-width: none; display: none;
-            pointer-events: none; will-change: transform;
+        #overlay {
+            position: absolute; left: 0; top: 0; display: none;
+            transform-origin: center center; will-change: transform; pointer-events: none;
+        }
+        #overlayImg { width: 100%; height: auto; display: block; max-width: none; }
+        #grid {
+            position: absolute; inset: 0; display: none;
+            background-image:
+                linear-gradient(to right, rgba(255,255,255,.85) 1px, transparent 1px),
+                linear-gradient(to bottom, rgba(255,255,255,.85) 1px, transparent 1px);
+            background-size: 12.5% 12.5%;
+            box-shadow: inset 0 0 0 1px rgba(255,255,255,.85);
+            mix-blend-mode: difference;
         }
     </style>
 </head>
 <body>
 
-    <!-- Live camera feed -->
     <video id="cam" autoplay playsinline muted></video>
 
-    <!-- Gesture surface + overlay image -->
-    <div id="stage"><img id="overlayImg" alt="" draggable="false"></div>
+    <div id="stage">
+        <div id="overlay">
+            <img id="overlayImg" alt="" draggable="false">
+            <div id="grid"></div>
+        </div>
+    </div>
 
     <!-- Empty state -->
     <div id="emptyState" class="fixed inset-0 flex flex-col items-center justify-center p-6 text-center z-50 bg-slate-950/95">
         <div class="w-20 h-20 rounded-full bg-indigo-600/20 border border-indigo-500/30 flex items-center justify-center mb-4 text-indigo-400 text-2xl">
-            <i class="fa-solid fa-cloud-arrow-up"></i>
+            <i class="fa-solid fa-pencil"></i>
         </div>
-        <h2 class="text-xl font-bold mb-2 text-white">Upload a Reference Image</h2>
-        <p class="text-slate-400 text-sm max-w-xs mb-6">Pick a sketch or photo, then line it up with your paper using the camera view.</p>
+        <h2 class="text-xl font-bold mb-2 text-white">Choose a Reference Image</h2>
+        <p class="text-slate-400 text-sm max-w-xs mb-6">Prop your phone over your paper, overlay the image, and trace it.</p>
         <label class="cursor-pointer bg-indigo-600 active:scale-95 transition text-white px-6 py-3 rounded-xl font-semibold shadow-lg shadow-indigo-600/30 flex items-center gap-2">
             <i class="fa-solid fa-image"></i> Choose Image
             <input type="file" id="imageUpload" accept="image/*" class="hidden">
         </label>
-        <p id="camStatus" class="text-xs text-slate-500 mt-6 max-w-xs"></p>
     </div>
 
-    <!-- Camera error / start overlay -->
+    <!-- Camera error -->
     <div id="camError" class="fixed inset-0 hidden flex-col items-center justify-center p-6 text-center z-[60] bg-slate-950">
         <div class="text-rose-400 text-3xl mb-3"><i class="fa-solid fa-video-slash"></i></div>
         <h2 class="text-lg font-bold text-white mb-2">Camera unavailable</h2>
@@ -74,87 +82,77 @@
         <button id="retryCam" class="bg-indigo-600 active:scale-95 transition text-white px-6 py-3 rounded-xl font-semibold">Allow Camera / Retry</button>
     </div>
 
-    <!-- Lock badge -->
-    <div id="lockBadge" class="fixed left-1/2 -translate-x-1/2 bg-rose-600/90 text-white px-5 py-2 rounded-full text-xs font-bold uppercase tracking-wider shadow-2xl hidden z-40 pointer-events-none" style="top: calc(env(safe-area-inset-top) + 1rem)">
-        <i class="fa-solid fa-lock mr-1"></i> Locked
-    </div>
+    <!-- Floating unlock / show-controls button (only while locked) -->
+    <button id="unlockFab" class="fixed hidden z-50 bg-rose-600 text-white px-5 py-3 rounded-full text-sm font-bold shadow-2xl items-center gap-2 active:scale-95"
+            style="right:1rem; bottom: calc(env(safe-area-inset-bottom) + 1rem)">
+        <i class="fa-solid fa-lock"></i> Unlock
+    </button>
 
     <!-- Controls -->
-    <div id="controlPanel" class="fixed left-4 right-4 max-w-md mx-auto glass-panel rounded-2xl p-4 shadow-2xl z-40" style="bottom: calc(env(safe-area-inset-bottom) + 1rem)">
-        <div class="flex items-center justify-between mb-3 pb-2 border-b border-slate-800">
-            <div class="flex items-center gap-2">
-                <div class="w-3 h-3 rounded-full bg-indigo-500"></div>
-                <h1 class="font-semibold text-sm tracking-wide text-slate-200">TraceLock Controls</h1>
+    <div id="controlPanel" class="fixed left-3 right-3 max-w-md mx-auto glass-panel rounded-2xl p-3 shadow-2xl z-40" style="bottom: calc(env(safe-area-inset-bottom) + .75rem)">
+        <div class="flex items-center justify-between mb-2">
+            <h1 class="font-semibold text-sm text-slate-200 flex items-center gap-2"><span class="w-2.5 h-2.5 rounded-full bg-indigo-500"></span>TraceLock</h1>
+            <div class="flex gap-2">
+                <button id="resetBtn" class="w-9 h-9 rounded-lg bg-slate-800 text-slate-300" title="Reset position"><i class="fa-solid fa-rotate-left"></i></button>
+                <button id="minimizeBtn" class="w-9 h-9 rounded-lg bg-slate-800 text-slate-300" title="Collapse"><i class="fa-solid fa-chevron-down transition-transform duration-300" id="minimizeIcon"></i></button>
             </div>
-            <button id="minimizeBtn" class="w-9 h-9 rounded-lg bg-slate-800 text-slate-300 flex items-center justify-center">
-                <i class="fa-solid fa-chevron-down transition-transform duration-300" id="minimizeIcon"></i>
-            </button>
         </div>
 
-        <div id="panelContent" class="space-y-3">
-            <p class="text-[11px] text-slate-500 leading-snug">Drag to move · pinch to resize · twist with two fingers to rotate.</p>
+        <div id="panelContent" class="space-y-2.5">
+            <p class="text-[11px] text-slate-500 leading-snug">Drag to move · pinch to resize · twist to rotate</p>
 
-            <div class="space-y-1">
-                <div class="flex justify-between text-xs text-slate-400 font-medium">
-                    <span>Opacity</span><span id="opacityVal">50%</span>
-                </div>
-                <input type="range" id="opacityRange" min="10" max="100" value="50" class="w-full h-2">
+            <div>
+                <div class="flex justify-between text-xs text-slate-400"><span>Opacity</span><span id="opacityVal">50%</span></div>
+                <input type="range" id="opacityRange" min="5" max="100" value="50" class="w-full h-2">
             </div>
-
-            <div class="space-y-1">
-                <div class="flex justify-between text-xs text-slate-400 font-medium">
-                    <span>Size</span><span id="scaleVal">100%</span>
-                </div>
+            <div>
+                <div class="flex justify-between text-xs text-slate-400"><span>Image size</span><span id="scaleVal">100%</span></div>
                 <input type="range" id="scaleRange" min="10" max="400" value="100" class="w-full h-2">
+            </div>
+            <div>
+                <div class="flex justify-between text-xs text-slate-400"><span>Camera zoom</span><span id="zoomVal">1.0x</span></div>
+                <input type="range" id="zoomRange" min="1" max="4" step="0.1" value="1" class="w-full h-2">
             </div>
 
             <div class="grid grid-cols-4 gap-2">
-                <label class="cursor-pointer bg-slate-800 active:scale-95 transition text-slate-200 py-2.5 rounded-xl flex flex-col items-center gap-1 text-xs font-medium">
-                    <i class="fa-solid fa-folder-open text-indigo-400 text-sm"></i><span>Upload</span>
-                    <input type="file" id="imageUploadSecondary" accept="image/*" class="hidden">
-                </label>
-                <button id="invertBtn" class="bg-slate-800 active:scale-95 transition text-slate-200 py-2.5 rounded-xl flex flex-col items-center gap-1 text-xs font-medium">
-                    <i class="fa-solid fa-circle-half-stroke text-sky-400 text-sm"></i><span>Invert</span>
-                </button>
-                <button id="grayscaleBtn" class="bg-slate-800 active:scale-95 transition text-slate-200 py-2.5 rounded-xl flex flex-col items-center gap-1 text-xs font-medium">
-                    <i class="fa-solid fa-wand-magic-sparkles text-purple-400 text-sm"></i><span>B&amp;W</span>
-                </button>
-                <button id="flipCamBtn" class="bg-slate-800 active:scale-95 transition text-slate-200 py-2.5 rounded-xl flex flex-col items-center gap-1 text-xs font-medium">
-                    <i class="fa-solid fa-camera-rotate text-emerald-400 text-sm"></i><span>Camera</span>
-                </button>
+                <label class="tool"><i class="fa-solid fa-folder-open text-indigo-400"></i><span>Image</span>
+                    <input type="file" id="imageUploadSecondary" accept="image/*" class="hidden"></label>
+                <button id="outlineBtn" class="tool"><i class="fa-solid fa-pen-nib"></i><span>Outline</span></button>
+                <button id="gridBtn" class="tool"><i class="fa-solid fa-border-all"></i><span>Grid</span></button>
+                <button id="invertBtn" class="tool"><i class="fa-solid fa-circle-half-stroke"></i><span>Invert</span></button>
+                <button id="flipHBtn" class="tool"><i class="fa-solid fa-left-right"></i><span>Flip H</span></button>
+                <button id="flipVBtn" class="tool"><i class="fa-solid fa-up-down"></i><span>Flip V</span></button>
+                <button id="torchBtn" class="tool"><i class="fa-solid fa-bolt"></i><span>Light</span></button>
+                <button id="flipCamBtn" class="tool"><i class="fa-solid fa-camera-rotate"></i><span>Camera</span></button>
             </div>
 
-            <button id="lockBtn" class="w-full py-3.5 px-4 rounded-xl font-bold flex items-center justify-center gap-3 transition-all shadow-lg bg-indigo-600 active:scale-[0.98] text-white shadow-indigo-600/30">
-                <i class="fa-solid fa-unlock text-lg" id="lockIcon"></i>
-                <span id="lockText">Lock Position</span>
+            <button id="lockBtn" class="w-full py-3 rounded-xl font-bold flex items-center justify-center gap-3 bg-indigo-600 active:scale-[0.98] text-white">
+                <i class="fa-solid fa-lock"></i> Lock &amp; Hide Controls
             </button>
         </div>
     </div>
 
     <script>
         const $ = (id) => document.getElementById(id);
-        const cam = $('cam'), stage = $('stage'), img = $('overlayImg');
+        const cam = $('cam'), stage = $('stage'), overlay = $('overlay'), img = $('overlayImg');
 
         const state = {
-            x: 0, y: 0,          // centre of image, in screen px
-            scale: 1,            // multiplier on base size
-            rot: 0,              // radians
-            opacity: 0.5,
-            locked: false, inverted: false, gray: false,
-            hasImage: false, baseW: 0,
-            facing: 'environment',
-            stream: null
+            x: 0, y: 0, scale: 1, rot: 0, opacity: 0.5,
+            flipH: false, flipV: false, inverted: false, outline: false, grid: false,
+            locked: false, hasImage: false,
+            facing: 'environment', stream: null, torch: false,
+            zoom: 1, hwZoom: false,
+            origUrl: '', outlineUrl: ''
         };
 
         /* ---------------- Camera ---------------- */
         async function startCamera() {
-            $('camError').classList.add('hidden');
-            $('camError').classList.remove('flex');
-
+            $('camError').classList.add('hidden'); $('camError').classList.remove('flex');
             if (!window.isSecureContext || !navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-                return showCamError('This page must be opened over HTTPS (your GitHub Pages link) in a modern browser such as Safari or Chrome.');
+                return showCamError('Open this page over HTTPS (your GitHub Pages link) in Safari or Chrome.');
             }
             if (state.stream) state.stream.getTracks().forEach(t => t.stop());
+            state.torch = false; $('torchBtn').classList.remove('on');
 
             const attempts = [
                 { video: { facingMode: { ideal: state.facing }, width: { ideal: 1920 }, height: { ideal: 1080 } }, audio: false },
@@ -167,24 +165,55 @@
                     state.stream = await navigator.mediaDevices.getUserMedia(c);
                     cam.srcObject = state.stream;
                     await cam.play().catch(() => {});
-                    $('camStatus').textContent = '';
+                    setupCaps();
                     return;
                 } catch (e) { lastErr = e; if (e.name === 'NotAllowedError') break; }
             }
             let msg = 'Could not start the camera.';
             if (lastErr) {
-                if (lastErr.name === 'NotAllowedError') msg = 'Camera permission was denied. Allow camera access for this site in your browser settings, then tap Retry.';
+                if (lastErr.name === 'NotAllowedError') msg = 'Camera permission was denied. Allow camera access for this site in browser settings, then tap Retry.';
                 else if (lastErr.name === 'NotFoundError') msg = 'No camera was found on this device.';
-                else if (lastErr.name === 'NotReadableError') msg = 'The camera is being used by another app. Close it and tap Retry.';
+                else if (lastErr.name === 'NotReadableError') msg = 'Another app is using the camera. Close it and tap Retry.';
                 else msg = lastErr.name + ': ' + lastErr.message;
             }
             showCamError(msg);
         }
         function showCamError(msg) {
             $('camErrorMsg').textContent = msg;
-            $('camError').classList.remove('hidden');
-            $('camError').classList.add('flex');
+            $('camError').classList.remove('hidden'); $('camError').classList.add('flex');
         }
+        function setupCaps() {
+            const track = state.stream.getVideoTracks()[0];
+            const caps = (track && track.getCapabilities) ? track.getCapabilities() : {};
+            $('torchBtn').style.display = caps.torch ? '' : 'none';
+            state.hwZoom = !!caps.zoom;
+            if (caps.zoom) {
+                $('zoomRange').min = caps.zoom.min; $('zoomRange').max = Math.min(caps.zoom.max, 8);
+                $('zoomRange').step = caps.zoom.step || 0.1;
+            } else { $('zoomRange').min = 1; $('zoomRange').max = 4; $('zoomRange').step = 0.1; }
+            state.zoom = Math.max(1, +$('zoomRange').min);
+            $('zoomRange').value = state.zoom; applyZoom();
+        }
+        function applyZoom() {
+            $('zoomVal').textContent = (+state.zoom).toFixed(1) + 'x';
+            const track = state.stream && state.stream.getVideoTracks()[0];
+            if (state.hwZoom && track) {
+                cam.style.transform = 'none';
+                track.applyConstraints({ advanced: [{ zoom: state.zoom }] }).catch(() => {});
+            } else {
+                cam.style.transform = `scale(${state.zoom})`;   // digital fallback (iOS)
+            }
+        }
+        $('zoomRange').addEventListener('input', e => { state.zoom = +e.target.value; applyZoom(); });
+        $('torchBtn').addEventListener('click', async () => {
+            const track = state.stream && state.stream.getVideoTracks()[0];
+            if (!track) return;
+            try {
+                await track.applyConstraints({ advanced: [{ torch: !state.torch }] });
+                state.torch = !state.torch;
+                $('torchBtn').classList.toggle('on', state.torch);
+            } catch (_) {}
+        });
         $('retryCam').addEventListener('click', startCamera);
         $('flipCamBtn').addEventListener('click', () => {
             state.facing = state.facing === 'environment' ? 'user' : 'environment';
@@ -193,49 +222,83 @@
         document.addEventListener('visibilitychange', () => {
             if (!document.hidden && (!state.stream || !state.stream.active)) startCamera();
         });
+        // Some phones suspend the stream while the file picker is open
+        cam.addEventListener('pause', () => { if (!document.hidden) cam.play().catch(() => {}); });
         startCamera();
 
-        /* ---------------- Image + transform ---------------- */
+        /* ---------------- Rendering ---------------- */
         function render() {
-            img.style.transform =
-                `translate(${state.x - img.offsetWidth / 2}px, ${state.y - img.offsetHeight / 2}px) ` +
-                `rotate(${state.rot}rad) scale(${state.scale})`;
-            img.style.opacity = state.opacity;
-            const f = [];
-            if (state.inverted) f.push('invert(100%)');
-            if (state.gray) f.push('grayscale(100%)');
-            img.style.filter = f.length ? f.join(' ') : 'none';
+            const w = overlay.offsetWidth, h = overlay.offsetHeight;
+            const sx = state.scale * (state.flipH ? -1 : 1), sy = state.scale * (state.flipV ? -1 : 1);
+            overlay.style.transform =
+                `translate(${state.x - w / 2}px, ${state.y - h / 2}px) rotate(${state.rot}rad) scale(${sx}, ${sy})`;
+            overlay.style.opacity = state.opacity;
+            img.style.filter = state.inverted ? 'invert(100%)' : 'none';
+            $('grid').style.display = state.grid ? 'block' : 'none';
             $('scaleRange').value = Math.round(Math.min(400, Math.max(10, state.scale * 100)));
             $('scaleVal').textContent = Math.round(state.scale * 100) + '%';
         }
+        function resetPosition() {
+            state.x = innerWidth / 2; state.y = innerHeight / 2.6; state.scale = 1; state.rot = 0;
+            state.flipH = state.flipV = false;
+            $('flipHBtn').classList.remove('on'); $('flipVBtn').classList.remove('on');
+            render();
+        }
+
+        /* ---------------- Image loading + outline ---------------- */
+        function makeOutline(source) {
+            const max = 1100;
+            const k = Math.min(1, max / Math.max(source.naturalWidth, source.naturalHeight));
+            const w = Math.max(1, Math.round(source.naturalWidth * k)), h = Math.max(1, Math.round(source.naturalHeight * k));
+            const c = document.createElement('canvas'); c.width = w; c.height = h;
+            const ctx = c.getContext('2d', { willReadFrequently: true });
+            ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, w, h);
+            ctx.drawImage(source, 0, 0, w, h);
+            const src = ctx.getImageData(0, 0, w, h), d = src.data;
+            const g = new Float32Array(w * h);
+            for (let i = 0; i < w * h; i++) g[i] = 0.299 * d[i*4] + 0.587 * d[i*4+1] + 0.114 * d[i*4+2];
+            const out = ctx.createImageData(w, h), o = out.data;
+            for (let y = 1; y < h - 1; y++) for (let x = 1; x < w - 1; x++) {
+                const i = y * w + x;
+                const gx = -g[i-w-1] - 2*g[i-1] - g[i+w-1] + g[i-w+1] + 2*g[i+1] + g[i+w+1];
+                const gy = -g[i-w-1] - 2*g[i-w] - g[i-w+1] + g[i+w-1] + 2*g[i+w] + g[i+w+1];
+                const m = Math.sqrt(gx * gx + gy * gy);
+                const a = Math.max(0, Math.min(255, (m - 40) * 3));
+                const p = i * 4;
+                o[p] = o[p+1] = o[p+2] = 255; o[p+3] = a;   // white lines, transparent elsewhere
+            }
+            ctx.clearRect(0, 0, w, h); ctx.putImageData(out, 0, 0);
+            return c.toDataURL('image/png');
+        }
+        function showCurrent() { img.src = state.outline ? state.outlineUrl : state.origUrl; }
 
         function loadImage(e) {
             const file = e.target.files[0];
             if (!file) return;
             const url = URL.createObjectURL(file);
-            img.onload = () => {
-                // fit to ~80% of screen width initially
-                state.baseW = Math.min(innerWidth * 0.8, img.naturalWidth);
-                img.style.width = state.baseW + 'px';
-                img.style.height = 'auto';
-                img.style.display = 'block';
-                state.x = innerWidth / 2;
-                state.y = innerHeight / 2.4;
-                state.scale = 1; state.rot = 0;
+            const probe = new Image();
+            probe.onload = () => {
+                state.origUrl = url;
+                try { state.outlineUrl = makeOutline(probe); } catch (_) { state.outlineUrl = url; }
+                const baseW = Math.min(innerWidth * 0.85, probe.naturalWidth);
+                overlay.style.width = baseW + 'px';
+                overlay.style.display = 'block';
                 state.hasImage = true;
+                showCurrent();
                 $('emptyState').classList.add('hidden');
-                render();
+                img.onload = () => { resetPosition(); img.onload = null; };
+                if (img.complete && img.naturalWidth) resetPosition();
             };
-            img.src = url;
+            probe.src = url;
             e.target.value = '';
+            if (!state.stream || !state.stream.active) startCamera();
         }
         $('imageUpload').addEventListener('change', loadImage);
         $('imageUploadSecondary').addEventListener('change', loadImage);
 
-        /* ---------------- Gestures (drag / pinch / twist) ---------------- */
+        /* ---------------- Gestures ---------------- */
         const pts = new Map();
         let last = null;
-
         function snapshot() {
             const p = [...pts.values()];
             if (p.length === 1) return { n: 1, cx: p[0].x, cy: p[0].y };
@@ -254,59 +317,52 @@
             pts.set(e.pointerId, { x: e.clientX, y: e.clientY });
             const cur = snapshot();
             if (last && cur.n === last.n) {
-                state.x += cur.cx - last.cx;
-                state.y += cur.cy - last.cy;
+                state.x += cur.cx - last.cx; state.y += cur.cy - last.cy;
                 if (cur.n === 2) {
                     state.scale = Math.min(6, Math.max(0.05, state.scale * cur.d / last.d));
-                    state.rot += cur.a - last.a;
+                    // when mirrored, rotation direction visually reverses
+                    const dir = (state.flipH ? -1 : 1) * (state.flipV ? -1 : 1);
+                    state.rot += (cur.a - last.a) * dir;
                 }
                 render();
             }
             last = cur;
         });
-        const endPtr = (e) => {
-            pts.delete(e.pointerId);
-            last = pts.size ? snapshot() : null;
-        };
+        const endPtr = (e) => { pts.delete(e.pointerId); last = pts.size ? snapshot() : null; };
         stage.addEventListener('pointerup', endPtr);
         stage.addEventListener('pointercancel', endPtr);
-        // Block iOS Safari's own pinch-zoom / scroll
         ['gesturestart', 'gesturechange'].forEach(t => document.addEventListener(t, e => e.preventDefault()));
         document.addEventListener('touchmove', e => { if (e.target === stage) e.preventDefault(); }, { passive: false });
 
         /* ---------------- Controls ---------------- */
         $('opacityRange').addEventListener('input', (e) => {
-            state.opacity = e.target.value / 100;
-            $('opacityVal').textContent = e.target.value + '%';
-            render();
+            state.opacity = e.target.value / 100; $('opacityVal').textContent = e.target.value + '%'; render();
         });
-        $('scaleRange').addEventListener('input', (e) => {
-            state.scale = e.target.value / 100;
-            render();
-        });
-        $('invertBtn').addEventListener('click', () => {
-            state.inverted = !state.inverted;
-            $('invertBtn').classList.toggle('bg-indigo-600', state.inverted);
-            render();
-        });
-        $('grayscaleBtn').addEventListener('click', () => {
-            state.gray = !state.gray;
-            $('grayscaleBtn').classList.toggle('bg-indigo-600', state.gray);
-            render();
-        });
+        $('scaleRange').addEventListener('input', (e) => { state.scale = e.target.value / 100; render(); });
 
-        $('lockBtn').addEventListener('click', () => {
-            if (!state.hasImage) { alert('Please upload an image first!'); return; }
-            state.locked = !state.locked;
-            stage.classList.toggle('locked', state.locked);
-            $('lockBadge').classList.toggle('hidden', !state.locked);
-            $('lockBtn').className = 'w-full py-3.5 px-4 rounded-xl font-bold flex items-center justify-center gap-3 transition-all shadow-lg active:scale-[0.98] text-white ' +
-                (state.locked ? 'bg-rose-600 shadow-rose-600/40' : 'bg-indigo-600 shadow-indigo-600/30');
-            $('lockIcon').className = 'fa-solid ' + (state.locked ? 'fa-lock' : 'fa-unlock') + ' text-lg';
-            $('lockText').textContent = state.locked ? 'Unlock Position' : 'Lock Position';
+        function toggle(key, btn) {
+            state[key] = !state[key]; $(btn).classList.toggle('on', state[key]);
+            if (key === 'outline') showCurrent();
+            render();
+        }
+        $('outlineBtn').addEventListener('click', () => toggle('outline', 'outlineBtn'));
+        $('gridBtn').addEventListener('click', () => toggle('grid', 'gridBtn'));
+        $('invertBtn').addEventListener('click', () => toggle('inverted', 'invertBtn'));
+        $('flipHBtn').addEventListener('click', () => toggle('flipH', 'flipHBtn'));
+        $('flipVBtn').addEventListener('click', () => toggle('flipV', 'flipVBtn'));
+        $('resetBtn').addEventListener('click', () => { if (state.hasImage) resetPosition(); });
+
+        function setLocked(v) {
+            if (v && !state.hasImage) { alert('Please choose an image first!'); return; }
+            state.locked = v;
+            stage.classList.toggle('locked', v);
+            $('controlPanel').style.display = v ? 'none' : '';
+            $('unlockFab').classList.toggle('hidden', !v);
+            $('unlockFab').classList.toggle('flex', v);
             pts.clear(); last = null;
-            if (state.locked) $('panelContent').classList.add('hidden'), $('minimizeIcon').style.transform = 'rotate(180deg)', minimized = true;
-        });
+        }
+        $('lockBtn').addEventListener('click', () => setLocked(true));
+        $('unlockFab').addEventListener('click', () => setLocked(false));
 
         let minimized = false;
         $('minimizeBtn').addEventListener('click', () => {
@@ -317,12 +373,10 @@
 
         addEventListener('resize', () => { if (state.hasImage) render(); });
 
-        // Keep the screen awake while tracing
-        let wakeLock;
-        async function keepAwake() {
-            try { wakeLock = await navigator.wakeLock.request('screen'); } catch (_) {}
-        }
+        // Keep screen awake while tracing
+        async function keepAwake() { try { await navigator.wakeLock.request('screen'); } catch (_) {} }
         document.addEventListener('click', keepAwake, { once: true });
+        document.addEventListener('visibilitychange', () => { if (!document.hidden) keepAwake(); });
     </script>
 </body>
 </html>
