@@ -288,7 +288,6 @@
                 overlay.style.width = baseW + 'px';
                 overlay.style.display = 'block';
                 state.hasImage = true;
-                loadOpenCV().catch(() => {});   // preload the tracker in the background
                 showCurrent();
                 $('emptyState').classList.add('hidden');
                 img.onload = () => { resetPosition(); img.onload = null; };
@@ -357,32 +356,14 @@
         $('flipVBtn').addEventListener('click', () => toggle('flipV', 'flipVBtn'));
         $('resetBtn').addEventListener('click', () => { if (state.hasImage) resetPosition(); });
 
-        /* ---------------- Paper tracking (OpenCV.js optical flow) ----------------
-           Tracks features on the paper frame-to-frame, fits a similarity transform
-           (move + scale + rotate) with RANSAC, and applies it to the overlay. */
-        let cvPromise = null, CV = null;
-        function loadOpenCV() {
-            if (cvPromise) return cvPromise;
-            cvPromise = new Promise((resolve, reject) => {
-                const s = document.createElement('script');
-                s.src = 'https://docs.opencv.org/4.9.0/opencv.js';
-                s.async = true;
-                s.onerror = () => { cvPromise = null; reject(new Error('load failed')); };
-                s.onload = async () => {
-                    try {
-                        let c = window.cv;
-                        if (c && typeof c.then === 'function') c = await c;
-                        if (!c.Mat) await new Promise(r => { c.onRuntimeInitialized = r; });
-                        CV = c; resolve(c);
-                    } catch (e) { cvPromise = null; reject(e); }
-                };
-                document.head.appendChild(s);
-            });
-            return cvPromise;
-        }
-
-        const TW = 320; // tracking resolution (px wide)
-        const trk = { on: false, busy: false, raf: 0, lost: false };
+        /* ---------------- Paper tracking (pure JS, no downloads) ----------------
+           Picks corner-like points on the paper, follows them frame-to-frame by patch
+           matching, fits a similarity transform (move + scale + rotate) with RANSAC,
+           and applies it to the overlay. */
+        const TW = 240;          // tracking resolution (px wide)
+        const PH = 6, PSTEP = 2; // patch half-size / sample step for matching
+        const SR = 7;            // search radius (px) around predicted position
+        const trk = { on: false, raf: 0, lost: true, vx: 0, vy: 0, lastT: -1 };
 
         function badge(text, color) {
             const b = $('trackBadge');
@@ -399,16 +380,75 @@
             let sw = W / k, sh = H / k;
             if (!state.hwZoom) { sw /= state.zoom; sh /= state.zoom; }   // digital zoom crop
             trk.ctx.drawImage(cam, (vw - sw) / 2, (vh - sh) / 2, sw, sh, 0, 0, trk.cw, trk.ch);
-            trk.rgba.data.set(trk.ctx.getImageData(0, 0, trk.cw, trk.ch).data);
-            CV.cvtColor(trk.rgba, trk.curr, CV.COLOR_RGBA2GRAY);
+            const d = trk.ctx.getImageData(0, 0, trk.cw, trk.ch).data, g = trk.curr;
+            for (let i = 0, j = 0; i < g.length; i++, j += 4) g[i] = (d[j] * 77 + d[j+1] * 150 + d[j+2] * 29) >> 8;
             return true;
         }
-        function detect() {
-            const c = new CV.Mat();
-            CV.goodFeaturesToTrack(trk.curr, c, 200, 0.01, 7);
-            const arr = Array.from(c.data32F);
-            c.delete();
-            return arr;
+
+        // add new corner points (best Shi-Tomasi score per empty grid cell)
+        function detect(g, keep) {
+            const w = trk.cw, h = trk.ch, cell = 24, m = 8;
+            const cols = Math.ceil(w / cell), rows = Math.ceil(h / cell);
+            const occ = new Uint8Array(cols * rows);
+            for (let i = 0; i < keep.length; i += 2) {
+                const cx = Math.min(cols - 1, Math.max(0, (keep[i] / cell) | 0)), cy = Math.min(rows - 1, Math.max(0, (keep[i+1] / cell) | 0));
+                occ[cy * cols + cx] = 1;
+            }
+            const out = keep.slice();
+            let added = 0;
+            for (let cy = 0; cy < rows && added < 70; cy++) for (let cx = 0; cx < cols; cx++) {
+                if (occ[cy * cols + cx]) continue;
+                let best = 100, bx = -1, by = -1;   // minimum acceptable score
+                const x0 = Math.max(m, cx * cell), x1 = Math.min(w - m, (cx + 1) * cell);
+                const y0 = Math.max(m, cy * cell), y1 = Math.min(h - m, (cy + 1) * cell);
+                for (let y = y0; y < y1; y += 2) for (let x = x0; x < x1; x += 2) {
+                    let sxx = 0, syy = 0, sxy = 0;
+                    for (let v = -2; v <= 2; v++) for (let u = -2; u <= 2; u++) {
+                        const i = (y + v) * w + x + u;
+                        const gx = (g[i+1] - g[i-1]) >> 1, gy = (g[i+w] - g[i-w]) >> 1;
+                        sxx += gx * gx; syy += gy * gy; sxy += gx * gy;
+                    }
+                    const t = (sxx - syy) / 2;
+                    const score = (sxx + syy) / 2 - Math.sqrt(t * t + sxy * sxy);
+                    if (score > best) { best = score; bx = x; by = y; }
+                }
+                if (bx >= 0) { out.push(bx, by); added++; }
+            }
+            return out;
+        }
+
+        function sad(a, b, ax, ay, bx, by) {
+            const w = trk.cw;
+            let s = 0;
+            for (let v = -PH; v <= PH; v += PSTEP) {
+                let ia = (ay + v) * w + ax - PH, ib = (by + v) * w + bx - PH;
+                for (let u = -PH; u <= PH; u += PSTEP, ia += PSTEP, ib += PSTEP) s += Math.abs(a[ia] - b[ib]);
+            }
+            return s;
+        }
+        // find where the patch around (px,py) in prev went in curr; returns [x,y] or null
+        function matchPoint(px, py) {
+            const w = trk.cw, h = trk.ch, lim = PH + 1;
+            const ix = Math.round(px), iy = Math.round(py);
+            if (ix < lim || iy < lim || ix >= w - lim || iy >= h - lim) return null;
+            const cx = Math.round(px + trk.vx), cy = Math.round(py + trk.vy);
+            let best = Infinity, bx = 0, by = 0;
+            for (let dy = -SR; dy <= SR; dy++) {
+                const y = cy + dy; if (y < lim || y >= h - lim) continue;
+                for (let dx = -SR; dx <= SR; dx++) {
+                    const x = cx + dx; if (x < lim || x >= w - lim) continue;
+                    const s = sad(trk.prev, trk.curr, ix, iy, x, y);
+                    if (s < best) { best = s; bx = x; by = y; }
+                }
+            }
+            if (best === Infinity || best / 49 > 28) return null;
+            if (Math.abs(bx - cx) === SR || Math.abs(by - cy) === SR) return null;  // hit the edge of the window
+            // sub-pixel refinement (parabola through neighbours)
+            const c0 = best;
+            const xm = sad(trk.prev, trk.curr, ix, iy, bx - 1, by), xp = sad(trk.prev, trk.curr, ix, iy, bx + 1, by);
+            const ym = sad(trk.prev, trk.curr, ix, iy, bx, by - 1), yp = sad(trk.prev, trk.curr, ix, iy, bx, by + 1);
+            const dxs = (xm - xp) / (2 * (xm - 2 * c0 + xp) || 1), dys = (ym - yp) / (2 * (ym - 2 * c0 + yp) || 1);
+            return [bx + Math.max(-0.5, Math.min(0.5, dxs)) + (px - ix), by + Math.max(-0.5, Math.min(0.5, dys)) + (py - iy)];
         }
 
         // least-squares similarity transform P -> Q over the given point indices
@@ -430,21 +470,21 @@
             if (n < 8) return null;
             let best = [];
             for (let it = 0; it < 60; it++) {
-                const i = (Math.random() * n) | 0; let j = (Math.random() * n) | 0;
+                const i = (Math.random() * n) | 0, j = (Math.random() * n) | 0;
                 if (i === j) continue;
                 const M = fitSim(P, Q, [i, j]);
                 if (!M) continue;
                 const s = Math.hypot(M.a, M.b);
-                if (s < 0.5 || s > 2) continue;
+                if (s < 0.7 || s > 1.4) continue;
                 const inl = [];
                 for (let k = 0; k < n; k++) {
                     const x = P[2*k], y = P[2*k+1];
                     const ex = M.a * x - M.b * y + M.tx - Q[2*k], ey = M.b * x + M.a * y + M.ty - Q[2*k+1];
-                    if (ex * ex + ey * ey < 9) inl.push(k);
+                    if (ex * ex + ey * ey < 2.25) inl.push(k);
                 }
                 if (inl.length > best.length) best = inl;
             }
-            if (best.length < 8) return null;
+            if (best.length < Math.max(8, n * 0.3)) return null;
             const M = fitSim(P, Q, best);
             return M ? { M, inliers: best } : null;
         }
@@ -461,67 +501,54 @@
 
         function trackStep() {
             if (!trk.on) return;
-            if (!trk.busy && cam.readyState >= 2) {
-                trk.busy = true;
-                try {
-                    if (grabFrame()) {
-                        let kept = [], ok = false;
-                        const n = trk.pts.length / 2;
-                        if (n >= 8) {
-                            const pm = CV.matFromArray(n, 1, CV.CV_32FC2, trk.pts);
-                            const nm = new CV.Mat(), st = new CV.Mat(), er = new CV.Mat();
-                            CV.calcOpticalFlowPyrLK(trk.prev, trk.curr, pm, nm, st, er, trk.win, 3, trk.crit);
-                            const P = [], Q = [];
-                            for (let i = 0; i < n; i++) if (st.data[i]) {
-                                P.push(pm.data32F[2*i], pm.data32F[2*i+1]);
-                                Q.push(nm.data32F[2*i], nm.data32F[2*i+1]);
-                            }
-                            pm.delete(); nm.delete(); st.delete(); er.delete();
-                            const r = ransac(P, Q);
-                            if (r) {
-                                const { a: am, b: bm, tx: txm, ty: tym } = r.M, A = trk.A;
-                                trk.A = {
-                                    a: am * A.a - bm * A.b, b: am * A.b + bm * A.a,
-                                    tx: am * A.tx - bm * A.ty + txm, ty: bm * A.tx + am * A.ty + tym
-                                };
-                                for (const i of r.inliers) kept.push(Q[2*i], Q[2*i+1]);
-                                ok = true;
-                            }
-                        }
-                        if (ok !== !trk.lost) { trk.lost = !ok; badge(ok ? '● Tracking paper' : 'Tracking lost – point at paper', ok ? 'bg-emerald-600/90' : 'bg-amber-600/90'); }
-                        trk.pts = kept.length >= 80 ? kept : detect();
-                        trk.curr.copyTo(trk.prev);
-                        if (ok) applyTrack();
-                    }
-                } catch (e) { console.error(e); }
-                trk.busy = false;
-            }
             trk.raf = requestAnimationFrame(trackStep);
+            if (cam.readyState < 2 || cam.currentTime === trk.lastT) return;   // wait for a new video frame
+            trk.lastT = cam.currentTime;
+            try {
+                if (!grabFrame()) return;
+                const P = [], Q = [], n = trk.pts.length / 2;
+                for (let i = 0; i < n; i++) {
+                    const px = trk.pts[2*i], py = trk.pts[2*i+1], q = matchPoint(px, py);
+                    if (q) { P.push(px, py); Q.push(q[0], q[1]); }
+                }
+                const r = ransac(P, Q);
+                let kept = [];
+                if (r) {
+                    const { a: am, b: bm, tx: txm, ty: tym } = r.M, A = trk.A;
+                    trk.A = {
+                        a: am * A.a - bm * A.b, b: am * A.b + bm * A.a,
+                        tx: am * A.tx - bm * A.ty + txm, ty: bm * A.tx + am * A.ty + tym
+                    };
+                    let sx = 0, sy = 0;
+                    for (const i of r.inliers) { kept.push(Q[2*i], Q[2*i+1]); sx += Q[2*i] - P[2*i]; sy += Q[2*i+1] - P[2*i+1]; }
+                    trk.vx = sx / r.inliers.length; trk.vy = sy / r.inliers.length;
+                    applyTrack();
+                } else { trk.vx = trk.vy = 0; }
+                if (!!r === trk.lost) {
+                    trk.lost = !r;
+                    badge(r ? '● Tracking paper' : 'Tracking lost – point at paper', r ? 'bg-emerald-600/90' : 'bg-amber-600/90');
+                }
+                trk.pts = kept.length >= 50 ? kept : detect(trk.curr, kept);
+                const t = trk.prev; trk.prev = trk.curr; trk.curr = t;   // current frame becomes previous
+            } catch (e) { console.error(e); }
         }
 
-        async function startTracking() {
-            badge('Loading tracker…');
-            try { await loadOpenCV(); }
-            catch (_) { if (state.locked) badge('Tracking unavailable – locked to screen', 'bg-amber-600/90'); return; }
-            if (!state.locked) return;
+        function startTracking() {
             trk.cw = TW; trk.ch = Math.round(TW * innerHeight / innerWidth); trk.f = TW / innerWidth;
             const c = document.createElement('canvas'); c.width = trk.cw; c.height = trk.ch;
             trk.ctx = c.getContext('2d', { willReadFrequently: true });
-            trk.rgba = new CV.Mat(trk.ch, trk.cw, CV.CV_8UC4);
-            trk.curr = new CV.Mat(); trk.prev = new CV.Mat();
-            trk.win = new CV.Size(21, 21);
-            trk.crit = new CV.TermCriteria(CV.TermCriteria_EPS | CV.TermCriteria_COUNT, 20, 0.03);
-            if (!grabFrame()) { badge('Camera not ready', 'bg-amber-600/90'); return; }
-            trk.curr.copyTo(trk.prev);
-            trk.pts = detect();
+            trk.prev = new Uint8Array(trk.cw * trk.ch); trk.curr = new Uint8Array(trk.cw * trk.ch);
+            if (!grabFrame()) { badge('Camera not ready – locked to screen', 'bg-amber-600/90'); return; }
+            trk.pts = detect(trk.curr, []);
+            const t = trk.prev; trk.prev = trk.curr; trk.curr = t;
             trk.A = { a: 1, b: 0, tx: 0, ty: 0 };
             trk.base = { x: state.x, y: state.y, scale: state.scale, rot: state.rot };
-            trk.lost = true; trk.on = true;
+            trk.vx = trk.vy = 0; trk.lost = true; trk.lastT = -1; trk.on = true;
+            badge('Starting…');
             trk.raf = requestAnimationFrame(trackStep);
         }
         function stopTracking() {
             trk.on = false; cancelAnimationFrame(trk.raf);
-            for (const k of ['rgba', 'curr', 'prev']) if (trk[k]) { trk[k].delete(); trk[k] = null; }
             badge('');
         }
 
