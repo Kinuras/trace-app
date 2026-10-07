@@ -5,6 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
     <meta name="mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
     <title>TraceLock - Draw Overlay</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
@@ -95,7 +96,7 @@
     <!-- Controls -->
     <div id="controlPanel" class="fixed left-3 right-3 max-w-md mx-auto glass-panel rounded-2xl p-3 shadow-2xl z-40" style="bottom: calc(env(safe-area-inset-bottom) + .75rem)">
         <div class="flex items-center justify-between mb-2">
-            <h1 class="font-semibold text-sm text-slate-200 flex items-center gap-2"><span class="w-2.5 h-2.5 rounded-full bg-indigo-500"></span>TraceLock</h1>
+            <h1 class="font-semibold text-sm text-slate-200 flex items-center gap-2"><span class="w-2.5 h-2.5 rounded-full bg-indigo-500"></span>TraceLock <span class="text-[10px] font-normal text-slate-500">v4 JS-tracker</span></h1>
             <div class="flex gap-2">
                 <button id="resetBtn" class="w-9 h-9 rounded-lg bg-slate-800 text-slate-300" title="Reset position"><i class="fa-solid fa-rotate-left"></i></button>
                 <button id="minimizeBtn" class="w-9 h-9 rounded-lg bg-slate-800 text-slate-300" title="Collapse"><i class="fa-solid fa-chevron-down transition-transform duration-300" id="minimizeIcon"></i></button>
@@ -137,6 +138,16 @@
     </div>
 
     <script>
+        // Show any script error on screen so problems can be diagnosed on a phone
+        window.addEventListener('error', (e) => {
+            let b = document.getElementById('errBanner');
+            if (!b) {
+                b = document.createElement('div'); b.id = 'errBanner';
+                b.style.cssText = 'position:fixed;top:0;left:0;right:0;z-index:99999;background:#b91c1c;color:#fff;font:11px/1.3 monospace;padding:6px 8px;pointer-events:none';
+                document.body.appendChild(b);
+            }
+            b.textContent = 'Error: ' + e.message + ' (line ' + e.lineno + ')';
+        });
         const $ = (id) => document.getElementById(id);
         const cam = $('cam'), stage = $('stage'), overlay = $('overlay'), img = $('overlayImg');
 
