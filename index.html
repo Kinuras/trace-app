@@ -96,7 +96,7 @@
     <!-- Controls -->
     <div id="controlPanel" class="fixed left-3 right-3 max-w-md mx-auto glass-panel rounded-2xl p-3 shadow-2xl z-40" style="bottom: calc(env(safe-area-inset-bottom) + .75rem)">
         <div class="flex items-center justify-between mb-2">
-            <h1 class="font-semibold text-sm text-slate-200 flex items-center gap-2"><span class="w-2.5 h-2.5 rounded-full bg-indigo-500"></span>TraceLock <span class="text-[10px] font-normal text-slate-500">v4 JS-tracker</span></h1>
+            <h1 class="font-semibold text-sm text-slate-200 flex items-center gap-2"><span class="w-2.5 h-2.5 rounded-full bg-indigo-500"></span>TraceLock <span class="text-[10px] font-normal text-slate-500">v5 key-frame</span></h1>
             <div class="flex gap-2">
                 <button id="resetBtn" class="w-9 h-9 rounded-lg bg-slate-800 text-slate-300" title="Reset position"><i class="fa-solid fa-rotate-left"></i></button>
                 <button id="minimizeBtn" class="w-9 h-9 rounded-lg bg-slate-800 text-slate-300" title="Collapse"><i class="fa-solid fa-chevron-down transition-transform duration-300" id="minimizeIcon"></i></button>
@@ -374,7 +374,7 @@
         const TW = 240;          // tracking resolution (px wide)
         const PH = 6, PSTEP = 2; // patch half-size / sample step for matching
         const SR = 7;            // search radius (px) around predicted position
-        const trk = { on: false, raf: 0, lost: true, vx: 0, vy: 0, lastT: -1 };
+        const trk = { on: false, raf: 0, lost: true, lastT: -1, lostFrames: 0, sm: null };
 
         function badge(text, color) {
             const b = $('trackBadge');
@@ -438,17 +438,17 @@
             return s;
         }
         // find where the patch around (px,py) in prev went in curr; returns [x,y] or null
-        function matchPoint(px, py) {
+        function matchPoint(px, py, predX, predY) {
             const w = trk.cw, h = trk.ch, lim = PH + 1;
             const ix = Math.round(px), iy = Math.round(py);
             if (ix < lim || iy < lim || ix >= w - lim || iy >= h - lim) return null;
-            const cx = Math.round(px + trk.vx), cy = Math.round(py + trk.vy);
+            const cx = Math.round(predX), cy = Math.round(predY);
             let best = Infinity, bx = 0, by = 0;
             for (let dy = -SR; dy <= SR; dy++) {
                 const y = cy + dy; if (y < lim || y >= h - lim) continue;
                 for (let dx = -SR; dx <= SR; dx++) {
                     const x = cx + dx; if (x < lim || x >= w - lim) continue;
-                    const s = sad(trk.prev, trk.curr, ix, iy, x, y);
+                    const s = sad(trk.key, trk.curr, ix, iy, x, y);
                     if (s < best) { best = s; bx = x; by = y; }
                 }
             }
@@ -456,8 +456,8 @@
             if (Math.abs(bx - cx) === SR || Math.abs(by - cy) === SR) return null;  // hit the edge of the window
             // sub-pixel refinement (parabola through neighbours)
             const c0 = best;
-            const xm = sad(trk.prev, trk.curr, ix, iy, bx - 1, by), xp = sad(trk.prev, trk.curr, ix, iy, bx + 1, by);
-            const ym = sad(trk.prev, trk.curr, ix, iy, bx, by - 1), yp = sad(trk.prev, trk.curr, ix, iy, bx, by + 1);
+            const xm = sad(trk.key, trk.curr, ix, iy, bx - 1, by), xp = sad(trk.key, trk.curr, ix, iy, bx + 1, by);
+            const ym = sad(trk.key, trk.curr, ix, iy, bx, by - 1), yp = sad(trk.key, trk.curr, ix, iy, bx, by + 1);
             const dxs = (xm - xp) / (2 * (xm - 2 * c0 + xp) || 1), dys = (ym - yp) / (2 * (ym - 2 * c0 + yp) || 1);
             return [bx + Math.max(-0.5, Math.min(0.5, dxs)) + (px - ix), by + Math.max(-0.5, Math.min(0.5, dys)) + (py - iy)];
         }
@@ -500,14 +500,28 @@
             return M ? { M, inliers: best } : null;
         }
 
-        function applyTrack() {
-            const { a, b, tx, ty } = trk.A, B = trk.base, f = trk.f;
+        // A = lock-time view -> current view. Smoothed adaptively: heavy smoothing
+        // when nearly still (kills jitter), none when moving fast (no lag).
+        function applyTrack(A) {
+            const { a, b, tx, ty } = A, B = trk.base, f = trk.f;
             const px = B.x * f, py = B.y * f;
-            state.x = (a * px - b * py + tx) / f;
-            state.y = (b * px + a * py + ty) / f;
-            state.scale = B.scale * Math.hypot(a, b);
-            state.rot = B.rot + Math.atan2(b, a);
+            const T = {
+                x: (a * px - b * py + tx) / f, y: (b * px + a * py + ty) / f,
+                scale: B.scale * Math.hypot(a, b), rot: B.rot + Math.atan2(b, a)
+            };
+            const s = trk.sm || (trk.sm = { ...T });
+            const dist = Math.hypot(T.x - s.x, T.y - s.y) + Math.abs(T.scale - s.scale) * 300 + Math.abs(T.rot - s.rot) * 200;
+            const al = Math.min(1, 0.15 + dist * 0.08);
+            s.x += (T.x - s.x) * al; s.y += (T.y - s.y) * al;
+            s.scale += (T.scale - s.scale) * al; s.rot += (T.rot - s.rot) * al;
+            state.x = s.x; state.y = s.y; state.scale = s.scale; state.rot = s.rot;
             render();
+        }
+        function composeSim(M, A) {   // apply A first, then M
+            return {
+                a: M.a * A.a - M.b * A.b, b: M.a * A.b + M.b * A.a,
+                tx: M.a * A.tx - M.b * A.ty + M.tx, ty: M.b * A.tx + M.a * A.ty + M.ty
+            };
         }
 
         function trackStep() {
@@ -517,44 +531,58 @@
             trk.lastT = cam.currentTime;
             try {
                 if (!grabFrame()) return;
-                const P = [], Q = [], n = trk.pts.length / 2;
+                // Match key-frame points into the current frame, searching around where the
+                // last estimate (key -> current) predicts them. Measuring against a key frame,
+                // not the previous frame, stops small errors piling up into drift.
+                const P = [], Q = [], n = trk.pts.length / 2, K = trk.K;
                 for (let i = 0; i < n; i++) {
-                    const px = trk.pts[2*i], py = trk.pts[2*i+1], q = matchPoint(px, py);
+                    const px = trk.pts[2*i], py = trk.pts[2*i+1];
+                    const q = matchPoint(px, py, K.a * px - K.b * py + K.tx, K.b * px + K.a * py + K.ty);
                     if (q) { P.push(px, py); Q.push(q[0], q[1]); }
                 }
                 const r = ransac(P, Q);
-                let kept = [];
                 if (r) {
-                    const { a: am, b: bm, tx: txm, ty: tym } = r.M, A = trk.A;
-                    trk.A = {
-                        a: am * A.a - bm * A.b, b: am * A.b + bm * A.a,
-                        tx: am * A.tx - bm * A.ty + txm, ty: bm * A.tx + am * A.ty + tym
-                    };
-                    let sx = 0, sy = 0;
-                    for (const i of r.inliers) { kept.push(Q[2*i], Q[2*i+1]); sx += Q[2*i] - P[2*i]; sy += Q[2*i+1] - P[2*i+1]; }
-                    trk.vx = sx / r.inliers.length; trk.vy = sy / r.inliers.length;
-                    applyTrack();
-                } else { trk.vx = trk.vy = 0; }
+                    trk.K = r.M;
+                    trk.A = composeSim(r.M, trk.Akey);
+                    trk.lostFrames = 0;
+                    applyTrack(trk.A);
+                    // Start a new key frame when the view has changed enough that old patches
+                    // no longer match well, or too few points remain
+                    const s = Math.hypot(r.M.a, r.M.b), rot = Math.atan2(r.M.b, r.M.a);
+                    if (r.inliers.length < 45 || Math.abs(Math.log(s)) > 0.05 || Math.abs(rot) > 0.1) {
+                        const kept = [];
+                        for (const i of r.inliers) kept.push(Q[2*i], Q[2*i+1]);
+                        rekey(kept.length >= 45 ? kept : detect(trk.curr, kept), trk.A);
+                    }
+                } else if (++trk.lostFrames > 12) {
+                    rekey(detect(trk.curr, []), trk.A);   // lost for a while: restart from what the camera sees now
+                    trk.lostFrames = 0;
+                }
                 if (!!r === trk.lost) {
                     trk.lost = !r;
                     badge(r ? '● Tracking paper' : 'Tracking lost – point at paper', r ? 'bg-emerald-600/90' : 'bg-amber-600/90');
                 }
-                trk.pts = kept.length >= 50 ? kept : detect(trk.curr, kept);
-                const t = trk.prev; trk.prev = trk.curr; trk.curr = t;   // current frame becomes previous
             } catch (e) { console.error(e); }
+        }
+
+        // make the current frame the key frame; Akey = lock-time view -> this frame
+        function rekey(pts, Akey) {
+            const t = trk.key; trk.key = trk.curr; trk.curr = t;
+            trk.pts = pts; trk.Akey = Akey;
+            trk.K = { a: 1, b: 0, tx: 0, ty: 0 };
         }
 
         function startTracking() {
             trk.cw = TW; trk.ch = Math.round(TW * innerHeight / innerWidth); trk.f = TW / innerWidth;
             const c = document.createElement('canvas'); c.width = trk.cw; c.height = trk.ch;
             trk.ctx = c.getContext('2d', { willReadFrequently: true });
-            trk.prev = new Uint8Array(trk.cw * trk.ch); trk.curr = new Uint8Array(trk.cw * trk.ch);
+            trk.key = new Uint8Array(trk.cw * trk.ch); trk.curr = new Uint8Array(trk.cw * trk.ch);
             if (!grabFrame()) { badge('Camera not ready – locked to screen', 'bg-amber-600/90'); return; }
-            trk.pts = detect(trk.curr, []);
-            const t = trk.prev; trk.prev = trk.curr; trk.curr = t;
             trk.A = { a: 1, b: 0, tx: 0, ty: 0 };
             trk.base = { x: state.x, y: state.y, scale: state.scale, rot: state.rot };
-            trk.vx = trk.vy = 0; trk.lost = true; trk.lastT = -1; trk.on = true;
+            trk.sm = null; trk.lostFrames = 0;
+            rekey(detect(trk.curr, []), trk.A);
+            trk.lost = true; trk.lastT = -1; trk.on = true;
             badge('Starting…');
             trk.raf = requestAnimationFrame(trackStep);
         }
