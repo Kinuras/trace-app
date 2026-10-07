@@ -1,0 +1,571 @@
+<!DOCTYPE html>
+<html lang="en" class="h-full">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>TraceLock AR - Paper-Locked Tracing Assistant</title>
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- FontAwesome Icons -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <!-- Google Fonts Inter -->
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <!-- OpenCV.js for Paper Detection and Homography Warping -->
+    <script src="https://docs.opencv.org/4.8.0/opencv.js" async></script>
+    <style>
+        body {
+            font-family: 'Inter', sans-serif;
+            overscroll-behavior: none;
+            touch-action: none;
+        }
+        .glass-panel {
+            background: rgba(15, 23, 42, 0.88);
+            backdrop-filter: blur(16px);
+            -webkit-backdrop-filter: blur(16px);
+            border: 1px solid rgba(255, 255, 255, 0.12);
+        }
+        input[type=range] {
+            accent-color: #6366f1;
+        }
+    </style>
+</head>
+<body class="h-full bg-slate-950 text-slate-100 overflow-hidden relative select-none">
+
+    <!-- AR Camera & Workspace Container -->
+    <div id="workspace" class="absolute inset-0 overflow-hidden bg-black flex items-center justify-center">
+        
+        <!-- Live Rear Camera Stream -->
+        <video id="cameraStream" autoplay playsinline muted class="absolute inset-0 w-full h-full object-cover"></video>
+
+        <!-- Hidden canvas for OpenCV frame processing -->
+        <canvas id="processingCanvas" class="hidden"></canvas>
+
+        <!-- Paper Outline Guide SVG overlay (for manual or auto detection guidance) -->
+        <svg id="paperGuideSvg" class="absolute inset-0 w-full h-full pointer-events-none z-10 hidden">
+            <!-- Dynamic quad polygon for paper outline -->
+            <polygon id="paperQuad" points="" class="stroke-indigo-400 stroke-2 fill-indigo-500/10 stroke-dasharray-[6]" />
+            <!-- Corner handles for manual adjustment -->
+            <circle id="corner0" cx="0" cy="0" r="18" class="fill-indigo-600 stroke-white stroke-2 pointer-events-auto cursor-grab" />
+            <circle id="corner1" cx="0" cy="0" r="18" class="fill-indigo-600 stroke-white stroke-2 pointer-events-auto cursor-grab" />
+            <circle id="corner2" cx="0" cy="0" r="18" class="fill-indigo-600 stroke-white stroke-2 pointer-events-auto cursor-grab" />
+            <circle id="corner3" cx="0" cy="0" r="18" class="fill-indigo-600 stroke-white stroke-2 pointer-events-auto cursor-grab" />
+        </svg>
+
+        <!-- Reference Image Overlay (Locked / Warped to Paper) -->
+        <div id="imageOverlayContainer" class="absolute inset-0 pointer-events-none z-20 overflow-hidden">
+            <img id="targetImage" src="" alt="Reference Image" class="absolute max-w-none opacity-60 origin-top-left transition-opacity duration-150" style="display: none;">
+        </div>
+
+        <!-- Initial Setup / Upload Modal Overlay -->
+        <div id="uploadModal" class="absolute inset-0 bg-slate-950/90 backdrop-blur-md z-50 flex flex-col items-center justify-center p-6 text-center">
+            <div class="w-20 h-20 rounded-2xl bg-indigo-600/20 border border-indigo-500/30 flex items-center justify-center mb-4 text-indigo-400 text-3xl shadow-xl shadow-indigo-600/10">
+                <i class="fa-solid fa-camera-rotate"></i>
+            </div>
+            <h1 class="text-2xl font-bold mb-2">TraceLock AR</h1>
+            <p class="text-slate-400 text-sm max-w-xs mb-6">Upload a reference drawing. The app uses your camera to lock and track the image onto your physical paper in real time.</p>
+            
+            <label class="cursor-pointer bg-indigo-600 hover:bg-indigo-500 active:scale-95 transition text-white px-8 py-4 rounded-2xl font-semibold shadow-xl shadow-indigo-600/30 flex items-center gap-3 text-base">
+                <i class="fa-solid fa-cloud-arrow-up text-lg"></i> Choose Reference Image
+                <input type="file" id="imageUpload" accept="image/*" class="hidden">
+            </label>
+
+            <div id="cvStatus" class="mt-6 text-xs text-amber-400 font-medium flex items-center gap-2">
+                <i class="fa-solid fa-spinner animate-spin"></i> Initializing OpenCV.js & Camera...
+            </div>
+        </div>
+
+        <!-- Tracking Status Badge -->
+        <div id="trackingBadge" class="absolute top-6 left-1/2 -translate-x-1/2 glass-panel px-4 py-2 rounded-full text-xs font-semibold tracking-wide flex items-center gap-2 z-30 shadow-2xl transition-all">
+            <span id="trackingDot" class="w-2.5 h-2.5 rounded-full bg-amber-400 animate-pulse"></span>
+            <span id="trackingText">Align Paper Corners or Start Tracking</span>
+        </div>
+    </div>
+
+    <!-- Floating Control Panel -->
+    <div id="controlPanel" class="absolute bottom-6 left-4 right-4 max-w-md mx-auto glass-panel rounded-2xl p-4 shadow-2xl z-40 transition-all duration-300">
+        
+        <!-- Header -->
+        <div class="flex items-center justify-between mb-3 pb-2 border-b border-slate-800">
+            <div class="flex items-center gap-2">
+                <div class="w-3 h-3 rounded-full bg-indigo-500"></div>
+                <h2 class="font-semibold text-sm tracking-wide text-slate-200">AR Paper Tracking</h2>
+            </div>
+            <div class="flex items-center gap-2">
+                <button id="minimizeBtn" class="w-8 h-8 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 flex items-center justify-center transition">
+                    <i class="fa-solid fa-chevron-down transition-transform duration-300" id="minimizeIcon"></i>
+                </button>
+            </div>
+        </div>
+
+        <!-- Collapsible Controls Content -->
+        <div id="panelContent" class="space-y-4">
+            
+            <!-- Tracking Mode Selector -->
+            <div class="grid grid-cols-2 gap-2 p-1 bg-slate-900 rounded-xl border border-slate-800">
+                <button id="modeAutoBtn" class="py-2 px-3 rounded-lg text-xs font-semibold transition bg-indigo-600 text-white shadow">
+                    <i class="fa-solid fa-wand-magic-sparkles mr-1.5"></i> Auto Paper Detect
+                </button>
+                <button id="modeManualBtn" class="py-2 px-3 rounded-lg text-xs font-semibold transition text-slate-400 hover:text-slate-200">
+                    <i class="fa-solid fa-hand-pointer mr-1.5"></i> Manual 4-Corner
+                </button>
+            </div>
+
+            <!-- Opacity Slider -->
+            <div class="space-y-1.5">
+                <div class="flex justify-between text-xs text-slate-400 font-medium">
+                    <span>Reference Opacity</span>
+                    <span id="opacityVal">60%</span>
+                </div>
+                <input type="range" id="opacityRange" min="10" max="100" value="60" class="w-full h-2 bg-slate-800 rounded-lg appearance-none cursor-pointer">
+            </div>
+
+            <!-- Action Toolbar Grid -->
+            <div class="grid grid-cols-4 gap-2 pt-1">
+                <!-- Upload New -->
+                <label title="Change Image" class="cursor-pointer bg-slate-800 hover:bg-slate-700 active:scale-95 transition text-slate-200 py-2.5 rounded-xl flex flex-col items-center justify-center gap-1 text-xs font-medium">
+                    <i class="fa-solid fa-folder-open text-indigo-400 text-sm"></i>
+                    <span>Change</span>
+                    <input type="file" id="imageUploadSecondary" accept="image/*" class="hidden">
+                </label>
+
+                <!-- Invert Colors -->
+                <button id="invertBtn" title="Invert Colors" class="bg-slate-800 hover:bg-slate-700 active:scale-95 transition text-slate-200 py-2.5 rounded-xl flex flex-col items-center justify-center gap-1 text-xs font-medium">
+                    <i class="fa-solid fa-circle-half-stroke text-sky-400 text-sm"></i>
+                    <span>Invert</span>
+                </button>
+
+                <!-- Grayscale -->
+                <button id="grayscaleBtn" title="Grayscale Filter" class="bg-slate-800 hover:bg-slate-700 active:scale-95 transition text-slate-200 py-2.5 rounded-xl flex flex-col items-center justify-center gap-1 text-xs font-medium">
+                    <i class="fa-solid fa-palette text-purple-400 text-sm"></i>
+                    <span>B&W</span>
+                </button>
+
+                <!-- Reset Corners -->
+                <button id="resetCornersBtn" title="Reset Corners" class="bg-slate-800 hover:bg-slate-700 active:scale-95 transition text-slate-200 py-2.5 rounded-xl flex flex-col items-center justify-center gap-1 text-xs font-medium">
+                    <i class="fa-solid fa-rotate-left text-amber-400 text-sm"></i>
+                    <span>Reset</span>
+                </button>
+            </div>
+
+            <!-- Main Lock / Track Toggle Button -->
+            <button id="toggleTrackBtn" class="w-full py-3.5 px-4 rounded-xl font-bold flex items-center justify-center gap-3 transition-all shadow-lg bg-indigo-600 hover:bg-indigo-500 active:scale-[0.98] text-white shadow-indigo-600/30">
+                <i class="fa-solid fa-lock-open text-lg" id="trackIcon"></i>
+                <span id="trackText">Start Paper Lock Tracking</span>
+            </button>
+        </div>
+    </div>
+
+    <!-- Application Script Logic -->
+    <script>
+        let state = {
+            opencvReady: false,
+            trackingActive: false,
+            trackingMode: 'auto', // 'auto' or 'manual'
+            opacity: 0.6,
+            isInverted: false,
+            isGrayscale: false,
+            minimized: false,
+            imageLoaded: false
+        };
+
+        // 4 Paper Corners in screen coordinates
+        let corners = [
+            { x: 100, y: 150 }, // Top-Left
+            { x: 300, y: 150 }, // Top-Right
+            { x: 300, y: 450 }, // Bottom-Right
+            { x: 100, y: 450 }  // Bottom-Left
+        ];
+
+        let activeCornerIndex = null;
+        let referenceImage = null;
+        let videoWidth = 640;
+        let videoHeight = 480;
+
+        // DOM elements
+        const video = document.getElementById('cameraStream');
+        const processingCanvas = document.getElementById('processingCanvas');
+        const pCtx = processingCanvas.getContext('2d');
+        const uploadModal = document.getElementById('uploadModal');
+        const cvStatus = document.getElementById('cvStatus');
+        const targetImage = document.getElementById('targetImage');
+        const paperGuideSvg = document.getElementById('paperGuideSvg');
+        const paperQuad = document.getElementById('paperQuad');
+        const trackingBadge = document.getElementById('trackingBadge');
+        const trackingDot = document.getElementById('trackingDot');
+        const trackingText = document.getElementById('trackingText');
+        const toggleTrackBtn = document.getElementById('toggleTrackBtn');
+        const trackIcon = document.getElementById('trackIcon');
+        const trackText = document.getElementById('trackText');
+        const opacityRange = document.getElementById('opacityRange');
+        const opacityVal = document.getElementById('opacityVal');
+        const modeAutoBtn = document.getElementById('modeAutoBtn');
+        const modeManualBtn = document.getElementById('modeManualBtn');
+        const resetCornersBtn = document.getElementById('resetCornersBtn');
+        const invertBtn = document.getElementById('invertBtn');
+        const grayscaleBtn = document.getElementById('grayscaleBtn');
+        const minimizeBtn = document.getElementById('minimizeBtn');
+        const minimizeIcon = document.getElementById('minimizeIcon');
+        const panelContent = document.getElementById('panelContent');
+        const controlPanel = document.getElementById('controlPanel');
+
+        async function initCamera() {
+            try {
+                const stream = await navigator.mediaDevices.getUserMedia({
+                    video: { facingMode: 'environment', width: { ideal: 1280 }, height: { ideal: 720 } },
+                    audio: false
+                });
+                video.srcObject = stream;
+                await new Promise((resolve) => {
+                    video.onloadedmetadata = () => {
+                        video.play();
+                        videoWidth = video.videoWidth || 640;
+                        videoHeight = video.videoHeight || 480;
+                        processingCanvas.width = videoWidth;
+                        processingCanvas.height = videoHeight;
+                        setupInitialCorners();
+                        resolve();
+                    };
+                });
+            } catch (err) {
+                console.error("Camera access error:", err);
+                cvStatus.innerHTML = '<span class="text-rose-400"><i class="fa-solid fa-triangle-exclamation"></i> Camera permission required for AR paper tracking.</span>';
+            }
+        }
+
+        // OpenCV ready callback check
+        window.onOpenCvReady = function() {
+            state.opencvReady = true;
+            cvStatus.innerHTML = '<span class="text-emerald-400"><i class="fa-solid fa-circle-check"></i> OpenCV.js Ready! Choose an image.</span>';
+        };
+
+        // Fallback check if cv is loaded already
+        let cvCheckTimer = setInterval(() => {
+            if (typeof cv !== 'undefined' && cv.Mat) {
+                clearInterval(cvCheckTimer);
+                window.onOpenCvReady();
+            }
+        }, 500);
+
+        function setupInitialCorners() {
+            const sw = window.innerWidth;
+            const sh = window.innerHeight;
+            const w = Math.min(sw * 0.7, 400);
+            const h = Math.min(sh * 0.6, 550);
+            const cx = sw / 2;
+            const cy = sh / 2;
+
+            corners = [
+                { x: cx - w/2, y: cy - h/2 },
+                { x: cx + w/2, y: cy - h/2 },
+                { x: cx + w/2, y: cy + h/2 },
+                { x: cx - w/2, y: cy + h/2 }
+            ];
+            updateCornerElements();
+        }
+
+        function updateCornerElements() {
+            const pointsStr = corners.map(c => `${c.x},${c.y}`).join(' ');
+            paperQuad.setAttribute('points', pointsStr);
+            for (let i = 0; i < 4; i++) {
+                const circle = document.getElementById(`corner${i}`);
+                circle.setAttribute('cx', corners[i].x);
+                circle.setAttribute('cy', corners[i].y);
+            }
+        }
+
+        function handleImageUpload(e) {
+            const file = e.target.files[0];
+            if (!file) return;
+
+            const reader = new FileReader();
+            reader.onload = function(event) {
+                targetImage.src = event.target.result;
+                targetImage.onload = () => {
+                    referenceImage = targetImage;
+                    state.imageLoaded = true;
+                    targetImage.style.display = 'block';
+                    uploadModal.classList.add('hidden');
+                    paperGuideSvg.classList.remove('hidden');
+                    updateCornerElements();
+                };
+            };
+            reader.readAsDataURL(file);
+        }
+
+        document.getElementById('imageUpload').addEventListener('change', handleImageUpload);
+        document.getElementById('imageUploadSecondary').addEventListener('change', handleImageUpload);
+
+        for (let i = 0; i < 4; i++) {
+            const circle = document.getElementById(`corner${i}`);
+            circle.addEventListener('pointerdown', (e) => {
+                activeCornerIndex = i;
+                circle.setPointerCapture(e.pointerId);
+                e.stopPropagation();
+            });
+            circle.addEventListener('pointermove', (e) => {
+                if (activeCornerIndex === i) {
+                    corners[i].x = e.clientX;
+                    corners[i].y = e.clientY;
+                    updateCornerElements();
+                    if (!state.trackingActive) {
+                        applyWarpTransformation();
+                    }
+                    e.stopPropagation();
+                }
+            });
+            circle.addEventListener('pointerup', (e) => {
+                if (activeCornerIndex === i) {
+                    activeCornerIndex = null;
+                    try { circle.releasePointerCapture(e.pointerId); } catch(err){}
+                }
+            });
+        }
+
+        function applyWarpTransformation() {
+            if (!state.imageLoaded || !referenceImage) return;
+
+            // Compute CSS 3D matrix or SVG transform / 4-point CSS perspective approximation
+            // For robust fluid web rendering, we map the reference image inside the 4 corner quadrilateral using CSS matrix3d or direct canvas warping.
+            // Let's compute matrix3d projection from natural image rect to current `corners` quad.
+            const imgW = referenceImage.naturalWidth || 400;
+            const imgH = referenceImage.naturalHeight || 500;
+
+            // Source rectangle
+            const srcPoints = [
+                { x: 0, y: 0 },
+                { x: imgW, y: 0 },
+                { x: imgW, y: imgH },
+                { x: 0, y: imgH }
+            ];
+
+            // If OpenCV is ready and in auto mode or tracking, we can refine corners or use homography matrix
+            if (state.opencvReady && state.trackingActive && state.trackingMode === 'auto') {
+                detectPaperAutomatically();
+            }
+
+            // Compute CSS matrix3d mapping src -> dst (corners)
+            const m = computeMatrix3D(srcPoints, corners);
+            targetImage.style.width = imgW + 'px';
+            targetImage.style.height = imgH + 'px';
+            targetImage.style.transformOrigin = '0 0';
+            targetImage.style.transform = m;
+        }
+
+        // Helper to solve homography and generate CSS matrix3d string
+        function computeMatrix3D(src, dst) {
+            // Standard perspective transform calculation using 4 point correspondence
+            // Returns CSS matrix3d(...) string
+            if (typeof cv === 'undefined' || !state.opencvReady) {
+                // Fallback simple affine/translate transform if OpenCV not yet initialized
+                const dx = corners[0].x;
+                const dy = corners[0].y;
+                const scaleX = (corners[1].x - corners[0].x) / src[1].x;
+                return `translate(${dx}px, ${dy}px) scale(${scaleX})`;
+            }
+
+            let srcMat = cv.matFromJSArray(4, 2, cv.CV_32F, [
+                src[0].x, src[0].y,
+                src[1].x, src[1].y,
+                src[2].x, src[2].y,
+                src[3].x, src[3].y
+            ]);
+            let dstMat = cv.matFromJSArray(4, 2, cv.CV_32F, [
+                dst[0].x, dst[0].y,
+                dst[1].x, dst[1].y,
+                dst[2].x, dst[2].y,
+                dst[3].x, dst[3].y
+            ]);
+
+            let H = cv.getPerspectiveTransform(srcMat, dstMat);
+            
+            // Extract 3x3 float data
+            let h = [];
+            for (let i = 0; i < 9; i++) {
+                h.push(H.data32F[i]);
+            }
+
+            srcMat.delete();
+            dstMat.delete();
+            H.delete();
+
+            // CSS matrix3d takes column-major order:
+            // [ a1, b1, c1, d1,  a2, b2, c2, d2,  a3, b3, c3, d3,  a4, b4, c4, d4 ]
+            // H mapping:
+            // x' = (h0*x + h1*y + h2) / (h6*x + h7*y + h8)
+            // y' = (h3*x + h4*y + h5) / (h6*x + h7*y + h8)
+            // In column-major 3d matrix for 2D plane:
+            const h0 = h[0], h1 = h[1], h2 = h[2];
+            const h3 = h[3], h4 = h[4], h5 = h[5];
+            const h6 = h[6], h7 = h[7], h8 = h[8];
+
+            return `matrix3d(` +
+                `${h0}, ${h3}, 0, ${h6}, ` +
+                `${h1}, ${h4}, 0, ${h7}, ` +
+                `0, 0, 1, 0, ` +
+                `${h2}, ${h5}, 0, ${h8}` +
+            `)`;
+        }
+
+        function detectPaperAutomatically() {
+            if (!state.opencvReady) return;
+            try {
+                pCtx.drawImage(video, 0, 0, videoWidth, videoHeight);
+                let src = cv.imread(processingCanvas);
+                let gray = new cv.Mat();
+                cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY);
+                
+                // Gaussian blur to reduce noise
+                let blurred = new cv.Mat();
+                let ksize = new cv.Size(5, 5);
+                cv.GaussianBlur(gray, blurred, ksize, 0);
+
+                // Canny edge detection
+                let edged = new cv.Mat();
+                cv.Canny(blurred, edged, 75, 200);
+
+                // Find contours
+                let contours = new cv.MatVector();
+                let hierarchy = new cv.Mat();
+                cv.findContours(edged, contours, hierarchy, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE);
+
+                let maxArea = 0;
+                let bestApprox = null;
+
+                for (let i = 0; i < contours.size(); i++) {
+                    let cnt = contours.get(i);
+                    let area = cv.contourArea(cnt);
+                    if (area > (videoWidth * videoHeight * 0.15)) { // paper must take at least 15% of frame
+                        let peri = cv.arcLength(cnt, true);
+                        let approx = new cv.Mat();
+                        cv.approxPolyDP(cnt, approx, 0.02 * peri, true);
+
+                        if (approx.rows === 4 && area > maxArea) {
+                            maxArea = area;
+                            if (bestApprox) bestApprox.delete();
+                            bestApprox = approx;
+                        } else {
+                            approx.delete();
+                        }
+                    }
+                    cnt.delete();
+                }
+
+                if (bestApprox) {
+                    // Scale points from video resolution to screen resolution
+                    const scaleX = window.innerWidth / videoWidth;
+                    const scaleY = window.innerHeight / videoHeight;
+
+                    corners[0] = { x: bestApprox.data32S[0] * scaleX, y: bestApprox.data32S[1] * scaleY };
+                    corners[1] = { x: bestApprox.data32S[2] * scaleX, y: bestApprox.data32S[3] * scaleY };
+                    corners[2] = { x: bestApprox.data32S[4] * scaleX, y: bestApprox.data32S[5] * scaleY };
+                    corners[3] = { x: bestApprox.data32S[6] * scaleX, y: bestApprox.data32S[7] * scaleY };
+                    
+                    updateCornerElements();
+                    bestApprox.delete();
+                    
+                    trackingDot.className = "w-2.5 h-2.5 rounded-full bg-emerald-400";
+                    trackingText.textContent = "Paper Locked & Tracking (Auto)";
+                } else {
+                    trackingDot.className = "w-2.5 h-2.5 rounded-full bg-amber-400 animate-pulse";
+                    trackingText.textContent = "Searching for Paper... Hold steady";
+                }
+
+                src.delete(); gray.delete(); blurred.delete(); edged.delete(); contours.delete(); hierarchy.delete();
+            } catch (err) {
+                console.error("OpenCV processing error:", err);
+            }
+        }
+
+        function trackingLoop() {
+            if (state.trackingActive) {
+                applyWarpTransformation();
+            }
+            requestAnimationFrame(trackingLoop);
+        }
+        requestAnimationFrame(trackingLoop);
+
+        toggleTrackBtn.addEventListener('click', () => {
+            state.trackingActive = !state.trackingActive;
+            if (state.trackingActive) {
+                toggleTrackBtn.className = "w-full py-3.5 px-4 rounded-xl font-bold flex items-center justify-center gap-3 transition-all shadow-xl bg-rose-600 hover:bg-rose-500 active:scale-[0.98] text-white shadow-rose-600/40 ring-4 ring-rose-500/30";
+                trackIcon.className = "fa-solid fa-lock text-lg";
+                trackText.textContent = "Stop Paper Tracking";
+                trackingBadge.classList.add('ring-2', 'ring-emerald-500/50');
+            } else {
+                toggleTrackBtn.className = "w-full py-3.5 px-4 rounded-xl font-bold flex items-center justify-center gap-3 transition-all shadow-lg bg-indigo-600 hover:bg-indigo-500 active:scale-[0.98] text-white shadow-indigo-600/30";
+                trackIcon.className = "fa-solid fa-lock-open text-lg";
+                trackText.textContent = "Start Paper Lock Tracking";
+                trackingDot.className = "w-2.5 h-2.5 rounded-full bg-amber-400";
+                trackingText.textContent = "Tracking Paused (Manual Adjust)";
+                trackingBadge.classList.remove('ring-2', 'ring-emerald-500/50');
+            }
+        });
+
+        // Mode switches
+        modeAutoBtn.addEventListener('click', () => {
+            state.trackingMode = 'auto';
+            modeAutoBtn.className = "py-2 px-3 rounded-lg text-xs font-semibold transition bg-indigo-600 text-white shadow";
+            modeManualBtn.className = "py-2 px-3 rounded-lg text-xs font-semibold transition text-slate-400 hover:text-slate-200";
+        });
+
+        modeManualBtn.addEventListener('click', () => {
+            state.trackingMode = 'manual';
+            state.trackingActive = false; // Pause auto tracking
+            modeManualBtn.className = "py-2 px-3 rounded-lg text-xs font-semibold transition bg-indigo-600 text-white shadow";
+            modeAutoBtn.className = "py-2 px-3 rounded-lg text-xs font-semibold transition text-slate-400 hover:text-slate-200";
+            trackIcon.className = "fa-solid fa-lock-open text-lg";
+            trackText.textContent = "Start Paper Lock Tracking";
+            trackingText.textContent = "Manual 4-Corner Adjustment Mode";
+        });
+
+        // Opacity slider
+        opacityRange.addEventListener('input', (e) => {
+            state.opacity = e.target.value / 100;
+            targetImage.style.opacity = state.opacity;
+            opacityVal.textContent = e.target.value + '%';
+        });
+
+        // Reset corners
+        resetCornersBtn.addEventListener('click', setupInitialCorners);
+
+        // Filters
+        invertBtn.addEventListener('click', () => {
+            state.isInverted = !state.isInverted;
+            updateFilters();
+            invertBtn.classList.toggle('bg-indigo-900/50', state.isInverted);
+            invertBtn.classList.toggle('border', state.isInverted);
+            invertBtn.classList.toggle('border-indigo-500', state.isInverted);
+        });
+
+        grayscaleBtn.addEventListener('click', () => {
+            state.isGrayscale = !state.isGrayscale;
+            updateFilters();
+            grayscaleBtn.classList.toggle('bg-indigo-900/50', state.isGrayscale);
+            grayscaleBtn.classList.toggle('border', state.isGrayscale);
+            grayscaleBtn.classList.toggle('border-indigo-500', state.isGrayscale);
+        });
+
+        function updateFilters() {
+            let filters = [];
+            if (state.isInverted) filters.push('invert(100%)');
+            if (state.isGrayscale) filters.push('grayscale(100%)');
+            targetImage.style.filter = filters.join(' ');
+        }
+
+        // Minimize panel
+        minimizeBtn.addEventListener('click', () => {
+            state.minimized = !state.minimized;
+            if (state.minimized) {
+                panelContent.classList.add('hidden');
+                minimizeIcon.style.transform = 'rotate(180deg)';
+            } else {
+                panelContent.classList.remove('hidden');
+                minimizeIcon.style.transform = 'rotate(0deg)';
+            }
+        });
+
+        // Initialize camera on load
+        window.addEventListener('load', initCamera);
+    </script>
+</body>
+</html>
