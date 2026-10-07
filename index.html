@@ -1,153 +1,274 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
-    <title>AR Image Tracer</title>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>TraceLock - Paper Tracing App</title>
+    <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4"></script>
     <style>
-        body {
+        body, html {
             margin: 0;
-            overflow: hidden; /* Hide scrollbars */
+            padding: 0;
+            width: 100%;
+            height: 100%;
+            overflow: hidden;
+            background-color: #0f172a;
+            font-family: system-ui, -apple-system, sans-serif;
+            touch-action: none;
         }
-        canvas {
-            display: block;
-            width: 100vw;
-            height: 100vh;
-        }
-        #controls {
+        #videoElement {
             position: absolute;
-            bottom: 10px;
-            left: 10px;
-            background-color: rgba(255, 255, 255, 0.8);
-            padding: 10px;
-            border-radius: 5px;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+            z-index: 1;
+        }
+        #canvas {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            z-index: 2;
+        }
+        .glass-panel {
+            background: rgba(15, 23, 42, 0.85);
+            backdrop-filter: blur(12px);
+            -webkit-backdrop-filter: blur(12px);
+            border: 1px solid rgba(255, 255, 255, 0.15);
         }
     </style>
 </head>
 <body>
+
+    <!-- Camera Feed -->
+    <video id="videoElement" autoplay playsinline muted></video>
+    
+    <!-- Interactive Tracing Canvas -->
     <canvas id="canvas"></canvas>
-    <div id="controls">
-        <label for="opacity">Opacity:</label>
-        <input type="range" id="opacity" min="0" max="1" value="0.5" step="0.01">
-        <button id="invert">Invert</button>
-        <button id="grayscale">Grayscale</button>
-        <button id="reset">Reset</button>
-        <button id="lock">Lock</button>
+
+    <!-- Top Header Bar -->
+    <div class="absolute top-3 left-3 right-3 z-30 flex justify-between items-center pointer-events-none">
+        <div id="statusBadge" class="glass-panel px-3 py-1.5 rounded-full text-xs font-medium text-amber-300 flex items-center gap-2 pointer-events-auto shadow-lg">
+            <span class="w-2 h-2 rounded-full bg-amber-400 animate-pulse"></span>
+            <span id="statusText">Load an image to start tracing</span>
+        </div>
+        <div class="flex gap-2 pointer-events-auto">
+            <label class="glass-panel text-white px-3.5 py-2 rounded-full text-xs font-semibold cursor-pointer flex items-center gap-1.5 active:scale-95 transition shadow-lg">
+                📂 <span>Load Image</span>
+                <input type="file" id="imageLoader" accept="image/*" class="hidden">
+            </label>
+            <button id="toggleCamBtn" class="glass-panel text-white p-2.5 rounded-full text-xs active:scale-95 transition shadow-lg" title="Switch Camera">
+                🔄
+            </button>
+        </div>
+    </div>
+
+    <!-- Bottom Control Dock -->
+    <div class="absolute bottom-4 left-4 right-4 z-30 flex flex-col gap-3 pointer-events-none max-w-md mx-auto">
+        
+        <!-- Adjustment Sliders Panel -->
+        <div class="glass-panel rounded-2xl p-4 text-white space-y-3 pointer-events-auto shadow-2xl">
+            <div class="flex justify-between items-center text-xs">
+                <span class="font-semibold text-slate-300">Transparency / Opacity</span>
+                <span id="opacityVal">60%</span>
+            </div>
+            <input type="range" id="opacitySlider" min="0.05" max="1" step="0.05" value="0.6" class="w-full accent-cyan-500 cursor-pointer">
+
+            <div class="flex items-center justify-between pt-2 border-t border-slate-700/60">
+                <div class="flex gap-1.5">
+                    <button id="invertBtn" class="bg-slate-800 hover:bg-slate-700 px-3 py-1.5 rounded-xl text-xs font-medium transition active:scale-95">Invert 🌓</button>
+                    <button id="grayscaleBtn" class="bg-slate-800 hover:bg-slate-700 px-3 py-1.5 rounded-xl text-xs font-medium transition active:scale-95">B&W 👁️</button>
+                    <button id="resetBtn" class="bg-slate-800 hover:bg-slate-700 px-3 py-1.5 rounded-xl text-xs font-medium transition active:scale-95">Reset ↺</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Lock to Paper Button -->
+        <div class="pointer-events-auto">
+            <button id="lockBtn" class="w-full py-3.5 px-6 rounded-2xl font-bold text-sm bg-gradient-to-r from-emerald-600 to-teal-600 text-white shadow-xl shadow-emerald-900/40 flex items-center justify-center gap-2 active:scale-98 transition">
+                <span id="lockIcon">🔓</span> <span id="lockText">Lock to Paper (Allow Tracing)</span>
+            </button>
+        </div>
     </div>
 
     <script>
+        const video = document.getElementById('videoElement');
         const canvas = document.getElementById('canvas');
-        const controls = document.getElementById('controls');
-        const opacityInput = document.getElementById('opacity');
-        const invertButton = document.getElementById('invert');
-        const grayscaleButton = document.getElementById('grayscale');
-        const resetButton = document.getElementById('reset');
-        constLockButton = document.getElementById('lock');
+        const ctx = canvas.getContext('2d');
 
-        let img;
-        let quad = [
-            { x: 0, y: 0 },
-            { x: 0, y: 0 },
-            { x: 0, y: 0 },
-            { x: 0, y: 0 }
-        ];
-        let opacity = 0.5;
+        let currentFacingMode = 'environment';
+        let stream = null;
+        let loadedImg = null;
+        let opacity = 0.6;
         let isInverted = false;
         let isGrayscale = false;
-        let isTracking = false;
-        let scale = 1.0; // Added scale to handle resizing
-        let offset_x = 0;
-        let offset_y = 0;
+        let isLocked = false;
 
+        // Image transformation state
+        let imgX = 0, imgY = 0, imgScale = 1, imgRotation = 0;
 
-        canvas.width = window.innerWidth;
-        canvas.height = window.innerHeight;
+        // Touch interaction tracking
+        let activeTouches = new Map();
+        let initialPinchDist = 0;
+        let initialAngle = 0;
+        let startScale = 1;
+        let startRotation = 0;
 
-        // Load the image
-        const image = new Image();
-        image.src = 'your_image.jpg'; // Replace with your image URL
-        image.onload = () => {
-            img = image;
-            initCamera();
+        async function initCamera() {
+            if (stream) stream.getTracks().forEach(t => t.stop());
+            try {
+                stream = await navigator.mediaDevices.getUserMedia({
+                    video: { facingMode: currentFacingMode, width: { ideal: 1280 }, height: { ideal: 720 } },
+                    audio: false
+                });
+                video.srcObject = stream;
+                await video.play();
+                resizeCanvas();
+            } catch (err) {
+                alert("Camera access note: " + err.message);
+            }
+        }
+
+        function resizeCanvas() {
+            canvas.width = window.innerWidth;
+            canvas.height = window.innerHeight;
+            if (loadedImg && imgScale === 1 && imgX === 0) {
+                resetImage();
+            }
+        }
+        window.addEventListener('resize', resizeCanvas);
+
+        function resetImage() {
+            if (!loadedImg) return;
+            imgScale = Math.min((canvas.width * 0.75) / loadedImg.width, (canvas.height * 0.75) / loadedImg.height);
+            imgX = (canvas.width - loadedImg.width * imgScale) / 2;
+            imgY = (canvas.height - loadedImg.height * imgScale) / 2;
+            imgRotation = 0;
+        }
+
+        // Image Loader
+        document.getElementById('imageLoader').addEventListener('change', (e) => {
+            const file = e.target.files[0];
+            if (!file) return;
+            const reader = new FileReader();
+            reader.onload = (event) => {
+                const img = new Image();
+                img.onload = () => {
+                    loadedImg = img;
+                    resetImage();
+                    document.getElementById('statusText').textContent = "Drag, pinch or rotate image into position";
+                };
+                img.src = event.target.result;
+            };
+            reader.readAsDataURL(file);
+        });
+
+        // Touch & Gesture Controls
+        canvas.addEventListener('pointerdown', (e) => {
+            if (isLocked || !loadedImg) return;
+            activeTouches.set(e.pointerId, { x: e.clientX, y: e.clientY });
+        });
+
+        canvas.addEventListener('pointermove', (e) => {
+            if (isLocked || !loadedImg || !activeTouches.has(e.pointerId)) return;
+            
+            const prevPos = activeTouches.get(e.pointerId);
+            activeTouches.set(e.pointerId, { x: e.clientX, y: e.clientY });
+
+            if (activeTouches.size === 1) {
+                // Single finger drag to pan
+                imgX += e.clientX - prevPos.x;
+                imgY += e.clientY - prevPos.y;
+            } else if (activeTouches.size === 2) {
+                // Two finger pinch zoom & rotate
+                const touches = Array.from(activeTouches.values());
+                const dist = Math.hypot(touches[0].x - touches[1].x, touches[0].y - touches[1].y);
+                const angle = Math.atan2(touches[1].y - touches[0].y, touches[1].x - touches[0].x);
+
+                if (!initialPinchDist) {
+                    initialPinchDist = dist;
+                    initialAngle = angle;
+                    startScale = imgScale;
+                    startRotation = imgRotation;
+                } else {
+                    imgScale = Math.max(0.1, Math.min(10, startScale * (dist / initialPinchDist)));
+                    imgRotation = startRotation + (angle - initialAngle);
+                }
+            }
+        });
+
+        const endTouch = (e) => {
+            activeTouches.delete(e.pointerId);
+            if (activeTouches.size < 2) {
+                initialPinchDist = 0;
+            }
         };
+        canvas.addEventListener('pointerup', endTouch);
+        canvas.addEventListener('pointercancel', endTouch);
 
-        function initCamera() {
-            // Initialize the camera here, you can add more sophisticated tracking methods here
-            // This is a placeholder for more advanced camera tracking
-            requestAnimationFrame(renderLoop);
-        }
+        // Render Loop
+        function render() {
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
 
-        function renderLoop() {
-            requestAnimationFrame(renderLoop);
+            if (loadedImg) {
+                ctx.save();
+                ctx.globalAlpha = opacity;
 
-            // Clear the canvas
-            canvas.clearRect(0, 0, canvas.width, canvas.height);
+                let filters = [];
+                if (isInverted) filters.push('invert(100%)');
+                if (isGrayscale) filters.push('grayscale(100%)');
+                if (filters.length > 0) ctx.filter = filters.join(' ');
 
-            // Draw the image
-            drawImageQuad(img, quad, opacity, isInverted, isGrayscale, offset_x, offset_y, scale);
+                ctx.translate(imgX, imgY);
+                ctx.rotate(imgRotation);
+                ctx.scale(imgScale, imgScale);
 
-            // Update UI elements (this is simplified and could be done more efficiently)
-            updateUI();
-        }
-
-        function updateUI() {
-            opacityInput.value = opacity;
-
-            if (isInverted) {
-                invertButton.textContent = 'Uninvert';
-            } else {
-                invertButton.textContent = 'Invert';
+                ctx.drawImage(loadedImg, 0, 0);
+                ctx.restore();
             }
 
-            if (isGrayscale) {
-                grayscaleButton.textContent = 'UngrayScale';
-            } else {
-                grayscaleButton.textContent = 'Grayscale';
-            }
+            requestAnimationFrame(render);
         }
 
-        // Event Handlers
-        invertButton.addEventListener('click', () => {
-            isInverted = !isInverted;
-            updateUI();
+        // UI Controls
+        document.getElementById('opacitySlider').addEventListener('input', (e) => {
+            opacity = parseFloat(e.target.value);
+            document.getElementById('opacityVal').textContent = Math.round(opacity * 100) + '%';
         });
 
-        grayscaleButton.addEventListener('click', () => {
-            isGrayscale = !isGrayscale;
-            updateUI();
+        document.getElementById('invertBtn').addEventListener('click', () => { isInverted = !isInverted; });
+        document.getElementById('grayscaleBtn').addEventListener('click', () => { isGrayscale = !isGrayscale; });
+        document.getElementById('resetBtn').addEventListener('click', () => { resetImage(); });
+
+        const lockBtn = document.getElementById('lockBtn');
+        lockBtn.addEventListener('click', () => {
+            isLocked = !isLocked;
+            const badge = document.getElementById('statusBadge');
+            if (isLocked) {
+                lockBtn.className = "w-full py-3.5 px-6 rounded-2xl font-bold text-sm bg-gradient-to-r from-red-600 to-rose-600 text-white shadow-xl shadow-red-900/40 flex items-center justify-center gap-2 active:scale-98 transition";
+                document.getElementById('lockIcon').textContent = "🔒";
+                document.getElementById('lockText').textContent = "Locked to Paper (Touch Disabled)";
+                badge.className = "glass-panel px-3 py-1.5 rounded-full text-xs font-medium text-emerald-300 flex items-center gap-2 pointer-events-auto border border-emerald-500/30 shadow-lg";
+                document.getElementById('statusText').textContent = "🔒 Image Locked - Safe to trace!";
+            } else {
+                lockBtn.className = "w-full py-3.5 px-6 rounded-2xl font-bold text-sm bg-gradient-to-r from-emerald-600 to-teal-600 text-white shadow-xl shadow-emerald-900/40 flex items-center justify-center gap-2 active:scale-98 transition";
+                document.getElementById('lockIcon').textContent = "🔓";
+                document.getElementById('lockText').textContent = "Lock to Paper (Allow Tracing)";
+                badge.className = "glass-panel px-3 py-1.5 rounded-full text-xs font-medium text-amber-300 flex items-center gap-2 pointer-events-auto shadow-lg";
+                document.getElementById('statusText').textContent = "Drag, pinch or rotate image into position";
+            }
         });
 
-        opacityInput.addEventListener('input', (e) => {
-            opacity = e.target.value;
-            updateUI();
+        document.getElementById('toggleCamBtn').addEventListener('click', () => {
+            currentFacingMode = currentFacingMode === 'environment' ? 'user' : 'environment';
+            initCamera();
         });
 
-        resetButton.addEventListener('click', () => {
-            quad = [
-                { x: 0, y: 0 },
-                { x: 0, y: 0 },
-                { x: 0, y: 0 },
-                { x: 0, y: 0 }
-            ];
-            offset_x = 0;
-            offset_y = 0;
-            scale = 1.0;
-            updateUI();
-        });
-
-        LockButton.addEventListener('click', () => {
-            isTracking = !isTracking;
-            updateUI();
-        });
-
-
-        // (You would add code here to detect surface plane)
-        // For this example, we'll just add a simple manual adjustment system
-        canvas.addEventListener('mousedown', (e) => {
-            isTracking = false;
-            offset_x = e.clientX - canvas.offsetLeft;
-            offset_y = e.clientY - canvas.offsetTop;
-
-            //  Add more robust interaction logic here, potentially using mousemove and mouseup
-        });
+        initCamera();
+        render();
     </script>
 </body>
 </html>
