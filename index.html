@@ -2,29 +2,22 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>TraceLock - AR Floor Tracing Assistant</title>
-    <!-- Tailwind CSS CDN -->
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+    <meta name="mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <title>TraceLock - Floor Tracing Assistant</title>
     <script src="https://cdn.tailwindcss.com"></script>
-    <!-- FontAwesome for icons -->
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
-    <!-- Google Fonts Inter -->
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
-    
-    <!-- A-Frame and AR.js Scripts -->
-    <script src="https://aframe.io/releases/1.4.0/aframe.min.js"></script>
-    <script src="https://raw.githack.com/AR-js-org/AR.js/master/aframe/build/aframe-ar.js"></script>
 
     <style>
-        body, html {
-            margin: 0;
-            padding: 0;
-            width: 100%;
-            height: 100%;
-            overflow: hidden;
-            background-color: #000;
-            font-family: 'Inter', sans-serif;
-            color-scheme: dark;
+        html, body {
+            margin: 0; padding: 0; width: 100%; height: 100%;
+            overflow: hidden; background: #000;
+            font-family: 'Inter', sans-serif; color-scheme: dark;
+            overscroll-behavior: none;
+            -webkit-user-select: none; user-select: none;
+            -webkit-touch-callout: none;
         }
         .glass-panel {
             background: rgba(15, 23, 42, 0.9);
@@ -32,269 +25,304 @@
             -webkit-backdrop-filter: blur(16px);
             border: 1px solid rgba(255, 255, 255, 0.12);
         }
-        input[type=range] {
-            accent-color: #6366f1;
-        }
-        /* Hide default A-Frame VR button */
-        .a-enter-vr { display: none !important; }
+        input[type=range] { accent-color: #6366f1; }
 
-        /* Force AR.js video and A-Frame canvas to fill screen correctly without black clipping */
-        body > video {
-            position: fixed !important;
-            top: 0 !important;
-            left: 0 !important;
-            width: 100vw !important;
-            height: 100vh !important;
-            object-fit: cover !important;
-            z-index: 0 !important;
+        #cam {
+            position: fixed; inset: 0; width: 100%; height: 100%;
+            object-fit: cover; z-index: 0; background: #000;
         }
-        .a-canvas {
-            position: fixed !important;
-            top: 0 !important;
-            left: 0 !important;
-            width: 100vw !important;
-            height: 100vh !important;
-            z-index: 1 !important;
-            pointer-events: none !important;
+        #stage {
+            position: fixed; inset: 0; z-index: 1;
+            touch-action: none; /* we handle all gestures ourselves */
+        }
+        #stage.locked { pointer-events: none; }
+        #overlayImg {
+            position: absolute; left: 0; top: 0;
+            transform-origin: center center;
+            max-width: none; display: none;
+            pointer-events: none; will-change: transform;
         }
     </style>
 </head>
 <body>
 
-    <!-- AR Scene Background & Floor Lock Target -->
-    <a-scene embedded arjs="sourceType: webcam; debugUIEnabled: false; trackingMethod: best;" vr-mode-ui="enabled: false">
-        <a-assets>
-            <img id="ar-asset-image" src="" crossorigin="anonymous">
-        </a-assets>
+    <!-- Live camera feed -->
+    <video id="cam" autoplay playsinline muted></video>
 
-        <a-camera gps-camera rotation-reader>
-            <a-ring color="#6366f1" radius-inner="0.015" radius-outer="0.025" position="0 0 -1"></a-ring>
-        </a-camera>
+    <!-- Gesture surface + overlay image -->
+    <div id="stage"><img id="overlayImg" alt="" draggable="false"></div>
 
-        <!-- The virtual AR image anchored on the floor/world space -->
-        <a-image 
-            id="ar-target-image" 
-            src="#ar-asset-image" 
-            position="0 -1.0 -2.0" 
-            rotation="-90 0 0" 
-            width="1.2" 
-            height="1.2" 
-            visible="false">
-        </a-image>
-    </a-scene>
-
-    <!-- Placeholder when no image is uploaded -->
-    <div id="emptyState" class="fixed inset-0 flex flex-col items-center justify-center p-6 text-center z-50 bg-slate-950/95 backdrop-blur-md">
-        <div class="w-20 h-20 rounded-full bg-indigo-600/20 border border-indigo-500/30 flex items-center justify-center mb-4 text-indigo-400 text-2xl animate-pulse">
+    <!-- Empty state -->
+    <div id="emptyState" class="fixed inset-0 flex flex-col items-center justify-center p-6 text-center z-50 bg-slate-950/95">
+        <div class="w-20 h-20 rounded-full bg-indigo-600/20 border border-indigo-500/30 flex items-center justify-center mb-4 text-indigo-400 text-2xl">
             <i class="fa-solid fa-cloud-arrow-up"></i>
         </div>
         <h2 class="text-xl font-bold mb-2 text-white">Upload a Reference Image</h2>
-        <p class="text-slate-400 text-sm max-w-xs mb-6">Select a sketch, line-art, or photo to lock onto your physical paper.</p>
-        <label class="cursor-pointer bg-indigo-600 hover:bg-indigo-500 active:scale-95 transition text-white px-6 py-3 rounded-xl font-semibold shadow-lg shadow-indigo-600/30 flex items-center gap-2">
+        <p class="text-slate-400 text-sm max-w-xs mb-6">Pick a sketch or photo, then line it up with your paper using the camera view.</p>
+        <label class="cursor-pointer bg-indigo-600 active:scale-95 transition text-white px-6 py-3 rounded-xl font-semibold shadow-lg shadow-indigo-600/30 flex items-center gap-2">
             <i class="fa-solid fa-image"></i> Choose Image
             <input type="file" id="imageUpload" accept="image/*" class="hidden">
         </label>
+        <p id="camStatus" class="text-xs text-slate-500 mt-6 max-w-xs"></p>
     </div>
 
-    <!-- Lock Active Indicator Badge -->
-    <div id="lockBadge" class="fixed top-6 left-1/2 -translate-x-1/2 bg-rose-600/90 backdrop-blur-md text-white px-5 py-2 rounded-full text-xs font-bold uppercase tracking-wider shadow-2xl flex items-center gap-2.5 pointer-events-none hidden z-40 transition-all border border-rose-400/40 ring-4 ring-rose-500/20 animate-pulse">
-        <i class="fa-solid fa-lock text-sm"></i> 🔒 Locked to Floor / Paper
+    <!-- Camera error / start overlay -->
+    <div id="camError" class="fixed inset-0 hidden flex-col items-center justify-center p-6 text-center z-[60] bg-slate-950">
+        <div class="text-rose-400 text-3xl mb-3"><i class="fa-solid fa-video-slash"></i></div>
+        <h2 class="text-lg font-bold text-white mb-2">Camera unavailable</h2>
+        <p id="camErrorMsg" class="text-slate-400 text-sm max-w-xs mb-5"></p>
+        <button id="retryCam" class="bg-indigo-600 active:scale-95 transition text-white px-6 py-3 rounded-xl font-semibold">Allow Camera / Retry</button>
     </div>
 
-    <!-- Control Panel Dock -->
-    <div id="controlPanel" class="fixed bottom-6 left-4 right-4 max-w-md mx-auto glass-panel rounded-2xl p-4 shadow-2xl z-40 transition-all duration-300">
-        
-        <!-- Panel Header -->
+    <!-- Lock badge -->
+    <div id="lockBadge" class="fixed left-1/2 -translate-x-1/2 bg-rose-600/90 text-white px-5 py-2 rounded-full text-xs font-bold uppercase tracking-wider shadow-2xl hidden z-40 pointer-events-none" style="top: calc(env(safe-area-inset-top) + 1rem)">
+        <i class="fa-solid fa-lock mr-1"></i> Locked
+    </div>
+
+    <!-- Controls -->
+    <div id="controlPanel" class="fixed left-4 right-4 max-w-md mx-auto glass-panel rounded-2xl p-4 shadow-2xl z-40" style="bottom: calc(env(safe-area-inset-bottom) + 1rem)">
         <div class="flex items-center justify-between mb-3 pb-2 border-b border-slate-800">
             <div class="flex items-center gap-2">
                 <div class="w-3 h-3 rounded-full bg-indigo-500"></div>
-                <h1 class="font-semibold text-sm tracking-wide text-slate-200">TraceLock AR Controls</h1>
+                <h1 class="font-semibold text-sm tracking-wide text-slate-200">TraceLock Controls</h1>
             </div>
-            <div class="flex items-center gap-2">
-                <button id="minimizeBtn" class="w-8 h-8 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 flex items-center justify-center transition">
-                    <i class="fa-solid fa-chevron-down transition-transform duration-300" id="minimizeIcon"></i>
-                </button>
-            </div>
+            <button id="minimizeBtn" class="w-9 h-9 rounded-lg bg-slate-800 text-slate-300 flex items-center justify-center">
+                <i class="fa-solid fa-chevron-down transition-transform duration-300" id="minimizeIcon"></i>
+            </button>
         </div>
 
-        <!-- Collapsible Content Wrapper -->
-        <div id="panelContent" class="space-y-4">
-            
-            <!-- Opacity Slider -->
-            <div class="space-y-1.5">
+        <div id="panelContent" class="space-y-3">
+            <p class="text-[11px] text-slate-500 leading-snug">Drag to move · pinch to resize · twist with two fingers to rotate.</p>
+
+            <div class="space-y-1">
                 <div class="flex justify-between text-xs text-slate-400 font-medium">
-                    <span>Transparency / Opacity</span>
-                    <span id="opacityVal">70%</span>
+                    <span>Opacity</span><span id="opacityVal">50%</span>
                 </div>
-                <input type="range" id="opacityRange" min="10" max="100" value="70" class="w-full h-2 bg-slate-800 rounded-lg appearance-none cursor-pointer">
+                <input type="range" id="opacityRange" min="10" max="100" value="50" class="w-full h-2">
             </div>
 
-            <!-- Size / Scale Slider -->
-            <div class="space-y-1.5">
+            <div class="space-y-1">
                 <div class="flex justify-between text-xs text-slate-400 font-medium">
-                    <span>Image Size (Fit to Paper)</span>
-                    <span id="scaleVal">1.2m</span>
+                    <span>Size</span><span id="scaleVal">100%</span>
                 </div>
-                <input type="range" id="scaleRange" min="0.2" max="3.0" step="0.1" value="1.2" class="w-full h-2 bg-slate-800 rounded-lg appearance-none cursor-pointer">
+                <input type="range" id="scaleRange" min="10" max="400" value="100" class="w-full h-2">
             </div>
 
-            <!-- Action Buttons Grid -->
-            <div class="grid grid-cols-3 gap-2 pt-1">
-                <!-- Upload New -->
-                <label title="Upload New" class="cursor-pointer bg-slate-800 hover:bg-slate-700 active:scale-95 transition text-slate-200 py-2.5 rounded-xl flex flex-col items-center justify-center gap-1 text-xs font-medium">
-                    <i class="fa-solid fa-folder-open text-indigo-400 text-sm"></i>
-                    <span>Upload</span>
+            <div class="grid grid-cols-4 gap-2">
+                <label class="cursor-pointer bg-slate-800 active:scale-95 transition text-slate-200 py-2.5 rounded-xl flex flex-col items-center gap-1 text-xs font-medium">
+                    <i class="fa-solid fa-folder-open text-indigo-400 text-sm"></i><span>Upload</span>
                     <input type="file" id="imageUploadSecondary" accept="image/*" class="hidden">
                 </label>
-
-                <!-- Invert Colors -->
-                <button id="invertBtn" title="Invert Image Colors" class="bg-slate-800 hover:bg-slate-700 active:scale-95 transition text-slate-200 py-2.5 rounded-xl flex flex-col items-center justify-center gap-1 text-xs font-medium">
-                    <i class="fa-solid fa-circle-half-stroke text-sky-400 text-sm"></i>
-                    <span>Invert</span>
+                <button id="invertBtn" class="bg-slate-800 active:scale-95 transition text-slate-200 py-2.5 rounded-xl flex flex-col items-center gap-1 text-xs font-medium">
+                    <i class="fa-solid fa-circle-half-stroke text-sky-400 text-sm"></i><span>Invert</span>
                 </button>
-
-                <!-- Grayscale -->
-                <button id="grayscaleBtn" title="Toggle Grayscale" class="bg-slate-800 hover:bg-slate-700 active:scale-95 transition text-slate-200 py-2.5 rounded-xl flex flex-col items-center justify-center gap-1 text-xs font-medium">
-                    <i class="fa-solid fa-wand-magic-sparkles text-purple-400 text-sm"></i>
-                    <span>B&W</span>
+                <button id="grayscaleBtn" class="bg-slate-800 active:scale-95 transition text-slate-200 py-2.5 rounded-xl flex flex-col items-center gap-1 text-xs font-medium">
+                    <i class="fa-solid fa-wand-magic-sparkles text-purple-400 text-sm"></i><span>B&amp;W</span>
+                </button>
+                <button id="flipCamBtn" class="bg-slate-800 active:scale-95 transition text-slate-200 py-2.5 rounded-xl flex flex-col items-center gap-1 text-xs font-medium">
+                    <i class="fa-solid fa-camera-rotate text-emerald-400 text-sm"></i><span>Camera</span>
                 </button>
             </div>
 
-            <!-- Lock / Unlock Image Button -->
-            <button id="lockBtn" class="w-full py-3.5 px-4 rounded-xl font-bold flex items-center justify-center gap-3 transition-all shadow-lg bg-indigo-600 hover:bg-indigo-500 active:scale-[0.98] text-white shadow-indigo-600/30">
-                <i class="fa-solid fa-location-crosshairs text-lg" id="lockIcon"></i>
-                <span id="lockText">Lock Image on Floor</span>
+            <button id="lockBtn" class="w-full py-3.5 px-4 rounded-xl font-bold flex items-center justify-center gap-3 transition-all shadow-lg bg-indigo-600 active:scale-[0.98] text-white shadow-indigo-600/30">
+                <i class="fa-solid fa-unlock text-lg" id="lockIcon"></i>
+                <span id="lockText">Lock Position</span>
             </button>
         </div>
     </div>
 
     <script>
-        let state = {
-            opacity: 0.7,
-            scaleSize: 1.2,
-            isLocked: false,
-            isInverted: false,
-            isGrayscale: false,
-            minimized: false,
-            imageUrl: ''
+        const $ = (id) => document.getElementById(id);
+        const cam = $('cam'), stage = $('stage'), img = $('overlayImg');
+
+        const state = {
+            x: 0, y: 0,          // centre of image, in screen px
+            scale: 1,            // multiplier on base size
+            rot: 0,              // radians
+            opacity: 0.5,
+            locked: false, inverted: false, gray: false,
+            hasImage: false, baseW: 0,
+            facing: 'environment',
+            stream: null
         };
 
-        const emptyState = document.getElementById('emptyState');
-        const lockBtn = document.getElementById('lockBtn');
-        const lockIcon = document.getElementById('lockIcon');
-        const lockText = document.getElementById('lockText');
-        const lockBadge = document.getElementById('lockBadge');
-        const opacityRange = document.getElementById('opacityRange');
-        const opacityVal = document.getElementById('opacityVal');
-        const scaleRange = document.getElementById('scaleRange');
-        const scaleVal = document.getElementById('scaleVal');
-        const invertBtn = document.getElementById('invertBtn');
-        const grayscaleBtn = document.getElementById('grayscaleBtn');
-        const minimizeBtn = document.getElementById('minimizeBtn');
-        const minimizeIcon = document.getElementById('minimizeIcon');
-        const panelContent = document.getElementById('panelContent');
-        
-        const arAssetImage = document.getElementById('ar-asset-image');
-        const arTargetImage = document.getElementById('ar-target-image');
+        /* ---------------- Camera ---------------- */
+        async function startCamera() {
+            $('camError').classList.add('hidden');
+            $('camError').classList.remove('flex');
 
-        function handleImageUpload(e) {
+            if (!window.isSecureContext || !navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+                return showCamError('This page must be opened over HTTPS (your GitHub Pages link) in a modern browser such as Safari or Chrome.');
+            }
+            if (state.stream) state.stream.getTracks().forEach(t => t.stop());
+
+            const attempts = [
+                { video: { facingMode: { ideal: state.facing }, width: { ideal: 1920 }, height: { ideal: 1080 } }, audio: false },
+                { video: { facingMode: state.facing }, audio: false },
+                { video: true, audio: false }
+            ];
+            let lastErr;
+            for (const c of attempts) {
+                try {
+                    state.stream = await navigator.mediaDevices.getUserMedia(c);
+                    cam.srcObject = state.stream;
+                    await cam.play().catch(() => {});
+                    $('camStatus').textContent = '';
+                    return;
+                } catch (e) { lastErr = e; if (e.name === 'NotAllowedError') break; }
+            }
+            let msg = 'Could not start the camera.';
+            if (lastErr) {
+                if (lastErr.name === 'NotAllowedError') msg = 'Camera permission was denied. Allow camera access for this site in your browser settings, then tap Retry.';
+                else if (lastErr.name === 'NotFoundError') msg = 'No camera was found on this device.';
+                else if (lastErr.name === 'NotReadableError') msg = 'The camera is being used by another app. Close it and tap Retry.';
+                else msg = lastErr.name + ': ' + lastErr.message;
+            }
+            showCamError(msg);
+        }
+        function showCamError(msg) {
+            $('camErrorMsg').textContent = msg;
+            $('camError').classList.remove('hidden');
+            $('camError').classList.add('flex');
+        }
+        $('retryCam').addEventListener('click', startCamera);
+        $('flipCamBtn').addEventListener('click', () => {
+            state.facing = state.facing === 'environment' ? 'user' : 'environment';
+            startCamera();
+        });
+        document.addEventListener('visibilitychange', () => {
+            if (!document.hidden && (!state.stream || !state.stream.active)) startCamera();
+        });
+        startCamera();
+
+        /* ---------------- Image + transform ---------------- */
+        function render() {
+            img.style.transform =
+                `translate(${state.x - img.offsetWidth / 2}px, ${state.y - img.offsetHeight / 2}px) ` +
+                `rotate(${state.rot}rad) scale(${state.scale})`;
+            img.style.opacity = state.opacity;
+            const f = [];
+            if (state.inverted) f.push('invert(100%)');
+            if (state.gray) f.push('grayscale(100%)');
+            img.style.filter = f.length ? f.join(' ') : 'none';
+            $('scaleRange').value = Math.round(Math.min(400, Math.max(10, state.scale * 100)));
+            $('scaleVal').textContent = Math.round(state.scale * 100) + '%';
+        }
+
+        function loadImage(e) {
             const file = e.target.files[0];
             if (!file) return;
-
-            const reader = new FileReader();
-            reader.onload = function(event) {
-                state.imageUrl = event.target.result;
-                arAssetImage.src = state.imageUrl;
-                emptyState.classList.add('hidden');
+            const url = URL.createObjectURL(file);
+            img.onload = () => {
+                // fit to ~80% of screen width initially
+                state.baseW = Math.min(innerWidth * 0.8, img.naturalWidth);
+                img.style.width = state.baseW + 'px';
+                img.style.height = 'auto';
+                img.style.display = 'block';
+                state.x = innerWidth / 2;
+                state.y = innerHeight / 2.4;
+                state.scale = 1; state.rot = 0;
+                state.hasImage = true;
+                $('emptyState').classList.add('hidden');
+                render();
             };
-            reader.readAsDataURL(file);
+            img.src = url;
+            e.target.value = '';
         }
+        $('imageUpload').addEventListener('change', loadImage);
+        $('imageUploadSecondary').addEventListener('change', loadImage);
 
-        document.getElementById('imageUpload').addEventListener('change', handleImageUpload);
-        document.getElementById('imageUploadSecondary').addEventListener('change', handleImageUpload);
+        /* ---------------- Gestures (drag / pinch / twist) ---------------- */
+        const pts = new Map();
+        let last = null;
 
-        opacityRange.addEventListener('input', (e) => {
-            state.opacity = e.target.value / 100;
-            arTargetImage.setAttribute('material', `opacity: ${state.opacity}`);
-            opacityVal.textContent = e.target.value + '%';
+        function snapshot() {
+            const p = [...pts.values()];
+            if (p.length === 1) return { n: 1, cx: p[0].x, cy: p[0].y };
+            const dx = p[1].x - p[0].x, dy = p[1].y - p[0].y;
+            return { n: 2, cx: (p[0].x + p[1].x) / 2, cy: (p[0].y + p[1].y) / 2, d: Math.hypot(dx, dy) || 1, a: Math.atan2(dy, dx) };
+        }
+        stage.addEventListener('pointerdown', (e) => {
+            if (!state.hasImage || state.locked) return;
+            stage.setPointerCapture(e.pointerId);
+            pts.set(e.pointerId, { x: e.clientX, y: e.clientY });
+            if (pts.size > 2) pts.delete([...pts.keys()][0]);
+            last = snapshot();
         });
-
-        scaleRange.addEventListener('input', (e) => {
-            state.scaleSize = parseFloat(e.target.value);
-            arTargetImage.setAttribute('width', state.scaleSize);
-            arTargetImage.setAttribute('height', state.scaleSize);
-            scaleVal.textContent = state.scaleSize.toFixed(1) + 'm';
-        });
-
-        lockBtn.addEventListener('click', () => {
-            if (!state.imageUrl) {
-                alert("Please upload an image first!");
-                return;
-            }
-
-            state.isLocked = !state.isLocked;
-
-            if (state.isLocked) {
-                const cameraEl = document.querySelector('a-camera');
-                if (cameraEl && cameraEl.object3D) {
-                    const position = cameraEl.object3D.position;
-                    const direction = new THREE.Vector3();
-                    cameraEl.object3D.getWorldDirection(direction);
-
-                    const distance = 1.8;
-                    const targetX = position.x - (direction.x * distance);
-                    const targetZ = position.z - (direction.z * distance);
-                    const floorY = position.y - 1.0; 
-
-                    arTargetImage.setAttribute('position', `${targetX} ${floorY} ${targetZ}`);
+        stage.addEventListener('pointermove', (e) => {
+            if (!pts.has(e.pointerId)) return;
+            pts.set(e.pointerId, { x: e.clientX, y: e.clientY });
+            const cur = snapshot();
+            if (last && cur.n === last.n) {
+                state.x += cur.cx - last.cx;
+                state.y += cur.cy - last.cy;
+                if (cur.n === 2) {
+                    state.scale = Math.min(6, Math.max(0.05, state.scale * cur.d / last.d));
+                    state.rot += cur.a - last.a;
                 }
-                arTargetImage.setAttribute('visible', 'true');
-
-                lockBadge.classList.remove('hidden');
-                lockBtn.className = "w-full py-3.5 px-4 rounded-xl font-bold flex items-center justify-center gap-3 transition-all shadow-xl bg-rose-600 hover:bg-rose-500 active:scale-[0.98] text-white shadow-rose-600/40 ring-4 ring-rose-500/20 animate-pulse";
-                lockIcon.className = "fa-solid fa-lock text-lg";
-                lockText.textContent = "Unlock Position";
-            } else {
-                arTargetImage.setAttribute('visible', 'false');
-
-                lockBadge.classList.add('hidden');
-                lockBtn.className = "w-full py-3.5 px-4 rounded-xl font-bold flex items-center justify-center gap-3 transition-all shadow-lg bg-indigo-600 hover:bg-indigo-500 active:scale-[0.98] text-white shadow-indigo-600/30";
-                lockIcon.className = "fa-solid fa-location-crosshairs text-lg";
-                lockText.textContent = "Lock Image on Floor";
+                render();
             }
+            last = cur;
+        });
+        const endPtr = (e) => {
+            pts.delete(e.pointerId);
+            last = pts.size ? snapshot() : null;
+        };
+        stage.addEventListener('pointerup', endPtr);
+        stage.addEventListener('pointercancel', endPtr);
+        // Block iOS Safari's own pinch-zoom / scroll
+        ['gesturestart', 'gesturechange'].forEach(t => document.addEventListener(t, e => e.preventDefault()));
+        document.addEventListener('touchmove', e => { if (e.target === stage) e.preventDefault(); }, { passive: false });
+
+        /* ---------------- Controls ---------------- */
+        $('opacityRange').addEventListener('input', (e) => {
+            state.opacity = e.target.value / 100;
+            $('opacityVal').textContent = e.target.value + '%';
+            render();
+        });
+        $('scaleRange').addEventListener('input', (e) => {
+            state.scale = e.target.value / 100;
+            render();
+        });
+        $('invertBtn').addEventListener('click', () => {
+            state.inverted = !state.inverted;
+            $('invertBtn').classList.toggle('bg-indigo-600', state.inverted);
+            render();
+        });
+        $('grayscaleBtn').addEventListener('click', () => {
+            state.gray = !state.gray;
+            $('grayscaleBtn').classList.toggle('bg-indigo-600', state.gray);
+            render();
         });
 
-        invertBtn.addEventListener('click', () => {
-            state.isInverted = !state.isInverted;
-            updateFilters();
-            invertBtn.classList.toggle('bg-indigo-600', state.isInverted);
-            invertBtn.classList.toggle('text-white', state.isInverted);
+        $('lockBtn').addEventListener('click', () => {
+            if (!state.hasImage) { alert('Please upload an image first!'); return; }
+            state.locked = !state.locked;
+            stage.classList.toggle('locked', state.locked);
+            $('lockBadge').classList.toggle('hidden', !state.locked);
+            $('lockBtn').className = 'w-full py-3.5 px-4 rounded-xl font-bold flex items-center justify-center gap-3 transition-all shadow-lg active:scale-[0.98] text-white ' +
+                (state.locked ? 'bg-rose-600 shadow-rose-600/40' : 'bg-indigo-600 shadow-indigo-600/30');
+            $('lockIcon').className = 'fa-solid ' + (state.locked ? 'fa-lock' : 'fa-unlock') + ' text-lg';
+            $('lockText').textContent = state.locked ? 'Unlock Position' : 'Lock Position';
+            pts.clear(); last = null;
+            if (state.locked) $('panelContent').classList.add('hidden'), $('minimizeIcon').style.transform = 'rotate(180deg)', minimized = true;
         });
 
-        grayscaleBtn.addEventListener('click', () => {
-            state.isGrayscale = !state.isGrayscale;
-            updateFilters();
-            grayscaleBtn.classList.toggle('bg-indigo-600', state.isGrayscale);
-            grayscaleBtn.classList.toggle('text-white', state.isGrayscale);
+        let minimized = false;
+        $('minimizeBtn').addEventListener('click', () => {
+            minimized = !minimized;
+            $('panelContent').classList.toggle('hidden', minimized);
+            $('minimizeIcon').style.transform = minimized ? 'rotate(180deg)' : 'rotate(0deg)';
         });
 
-        function updateFilters() {
-            let filters = [];
-            if (state.isInverted) filters.push('invert(100%)');
-            if (state.isGrayscale) filters.push('grayscale(100%)');
-            arAssetImage.style.filter = filters.length > 0 ? filters.join(' ') : 'none';
+        addEventListener('resize', () => { if (state.hasImage) render(); });
+
+        // Keep the screen awake while tracing
+        let wakeLock;
+        async function keepAwake() {
+            try { wakeLock = await navigator.wakeLock.request('screen'); } catch (_) {}
         }
-
-        minimizeBtn.addEventListener('click', () => {
-            state.minimized = !state.minimized;
-            if (state.minimized) {
-                panelContent.classList.add('hidden');
-                minimizeIcon.style.transform = 'rotate(180deg)';
-            } else {
-                panelContent.classList.remove('hidden');
-                minimizeIcon.style.transform = 'rotate(0deg)';
-            }
-        });
+        document.addEventListener('click', keepAwake, { once: true });
     </script>
 </body>
 </html>
