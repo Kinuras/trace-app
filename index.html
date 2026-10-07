@@ -82,6 +82,10 @@
         <button id="retryCam" class="bg-indigo-600 active:scale-95 transition text-white px-6 py-3 rounded-xl font-semibold">Allow Camera / Retry</button>
     </div>
 
+    <!-- Tracking status (only while locked) -->
+    <div id="trackBadge" class="fixed left-1/2 -translate-x-1/2 hidden z-50 px-4 py-2 rounded-full text-xs font-bold shadow-2xl pointer-events-none bg-slate-800 text-white"
+         style="top: calc(env(safe-area-inset-top) + 1rem)"></div>
+
     <!-- Floating unlock / show-controls button (only while locked) -->
     <button id="unlockFab" class="fixed hidden z-50 bg-rose-600 text-white px-5 py-3 rounded-full text-sm font-bold shadow-2xl items-center gap-2 active:scale-95"
             style="right:1rem; bottom: calc(env(safe-area-inset-bottom) + 1rem)">
@@ -127,7 +131,7 @@
             </div>
 
             <button id="lockBtn" class="w-full py-3 rounded-xl font-bold flex items-center justify-center gap-3 bg-indigo-600 active:scale-[0.98] text-white">
-                <i class="fa-solid fa-lock"></i> Lock &amp; Hide Controls
+                <i class="fa-solid fa-lock"></i> Lock to Paper
             </button>
         </div>
     </div>
@@ -284,6 +288,7 @@
                 overlay.style.width = baseW + 'px';
                 overlay.style.display = 'block';
                 state.hasImage = true;
+                loadOpenCV().catch(() => {});   // preload the tracker in the background
                 showCurrent();
                 $('emptyState').classList.add('hidden');
                 img.onload = () => { resetPosition(); img.onload = null; };
@@ -352,6 +357,174 @@
         $('flipVBtn').addEventListener('click', () => toggle('flipV', 'flipVBtn'));
         $('resetBtn').addEventListener('click', () => { if (state.hasImage) resetPosition(); });
 
+        /* ---------------- Paper tracking (OpenCV.js optical flow) ----------------
+           Tracks features on the paper frame-to-frame, fits a similarity transform
+           (move + scale + rotate) with RANSAC, and applies it to the overlay. */
+        let cvPromise = null, CV = null;
+        function loadOpenCV() {
+            if (cvPromise) return cvPromise;
+            cvPromise = new Promise((resolve, reject) => {
+                const s = document.createElement('script');
+                s.src = 'https://docs.opencv.org/4.9.0/opencv.js';
+                s.async = true;
+                s.onerror = () => { cvPromise = null; reject(new Error('load failed')); };
+                s.onload = async () => {
+                    try {
+                        let c = window.cv;
+                        if (c && typeof c.then === 'function') c = await c;
+                        if (!c.Mat) await new Promise(r => { c.onRuntimeInitialized = r; });
+                        CV = c; resolve(c);
+                    } catch (e) { cvPromise = null; reject(e); }
+                };
+                document.head.appendChild(s);
+            });
+            return cvPromise;
+        }
+
+        const TW = 320; // tracking resolution (px wide)
+        const trk = { on: false, busy: false, raf: 0, lost: false };
+
+        function badge(text, color) {
+            const b = $('trackBadge');
+            b.textContent = text;
+            b.className = 'fixed left-1/2 -translate-x-1/2 z-50 px-4 py-2 rounded-full text-xs font-bold shadow-2xl pointer-events-none text-white ' + (color || 'bg-slate-800');
+            b.style.display = text ? '' : 'none';
+        }
+
+        function grabFrame() {
+            const vw = cam.videoWidth, vh = cam.videoHeight;
+            if (!vw) return false;
+            const W = innerWidth, H = innerHeight;
+            const k = Math.max(W / vw, H / vh);          // object-fit: cover
+            let sw = W / k, sh = H / k;
+            if (!state.hwZoom) { sw /= state.zoom; sh /= state.zoom; }   // digital zoom crop
+            trk.ctx.drawImage(cam, (vw - sw) / 2, (vh - sh) / 2, sw, sh, 0, 0, trk.cw, trk.ch);
+            trk.rgba.data.set(trk.ctx.getImageData(0, 0, trk.cw, trk.ch).data);
+            CV.cvtColor(trk.rgba, trk.curr, CV.COLOR_RGBA2GRAY);
+            return true;
+        }
+        function detect() {
+            const c = new CV.Mat();
+            CV.goodFeaturesToTrack(trk.curr, c, 200, 0.01, 7);
+            const arr = Array.from(c.data32F);
+            c.delete();
+            return arr;
+        }
+
+        // least-squares similarity transform P -> Q over the given point indices
+        function fitSim(P, Q, idx) {
+            let pcx = 0, pcy = 0, qcx = 0, qcy = 0;
+            for (const i of idx) { pcx += P[2*i]; pcy += P[2*i+1]; qcx += Q[2*i]; qcy += Q[2*i+1]; }
+            const n = idx.length; pcx /= n; pcy /= n; qcx /= n; qcy /= n;
+            let nr = 0, ni = 0, den = 0;
+            for (const i of idx) {
+                const dx = P[2*i] - pcx, dy = P[2*i+1] - pcy, ex = Q[2*i] - qcx, ey = Q[2*i+1] - qcy;
+                nr += dx * ex + dy * ey; ni += dx * ey - dy * ex; den += dx * dx + dy * dy;
+            }
+            if (den < 1e-6) return null;
+            const a = nr / den, b = ni / den;
+            return { a, b, tx: qcx - (a * pcx - b * pcy), ty: qcy - (b * pcx + a * pcy) };
+        }
+        function ransac(P, Q) {
+            const n = P.length / 2;
+            if (n < 8) return null;
+            let best = [];
+            for (let it = 0; it < 60; it++) {
+                const i = (Math.random() * n) | 0; let j = (Math.random() * n) | 0;
+                if (i === j) continue;
+                const M = fitSim(P, Q, [i, j]);
+                if (!M) continue;
+                const s = Math.hypot(M.a, M.b);
+                if (s < 0.5 || s > 2) continue;
+                const inl = [];
+                for (let k = 0; k < n; k++) {
+                    const x = P[2*k], y = P[2*k+1];
+                    const ex = M.a * x - M.b * y + M.tx - Q[2*k], ey = M.b * x + M.a * y + M.ty - Q[2*k+1];
+                    if (ex * ex + ey * ey < 9) inl.push(k);
+                }
+                if (inl.length > best.length) best = inl;
+            }
+            if (best.length < 8) return null;
+            const M = fitSim(P, Q, best);
+            return M ? { M, inliers: best } : null;
+        }
+
+        function applyTrack() {
+            const { a, b, tx, ty } = trk.A, B = trk.base, f = trk.f;
+            const px = B.x * f, py = B.y * f;
+            state.x = (a * px - b * py + tx) / f;
+            state.y = (b * px + a * py + ty) / f;
+            state.scale = B.scale * Math.hypot(a, b);
+            state.rot = B.rot + Math.atan2(b, a);
+            render();
+        }
+
+        function trackStep() {
+            if (!trk.on) return;
+            if (!trk.busy && cam.readyState >= 2) {
+                trk.busy = true;
+                try {
+                    if (grabFrame()) {
+                        let kept = [], ok = false;
+                        const n = trk.pts.length / 2;
+                        if (n >= 8) {
+                            const pm = CV.matFromArray(n, 1, CV.CV_32FC2, trk.pts);
+                            const nm = new CV.Mat(), st = new CV.Mat(), er = new CV.Mat();
+                            CV.calcOpticalFlowPyrLK(trk.prev, trk.curr, pm, nm, st, er, trk.win, 3, trk.crit);
+                            const P = [], Q = [];
+                            for (let i = 0; i < n; i++) if (st.data[i]) {
+                                P.push(pm.data32F[2*i], pm.data32F[2*i+1]);
+                                Q.push(nm.data32F[2*i], nm.data32F[2*i+1]);
+                            }
+                            pm.delete(); nm.delete(); st.delete(); er.delete();
+                            const r = ransac(P, Q);
+                            if (r) {
+                                const { a: am, b: bm, tx: txm, ty: tym } = r.M, A = trk.A;
+                                trk.A = {
+                                    a: am * A.a - bm * A.b, b: am * A.b + bm * A.a,
+                                    tx: am * A.tx - bm * A.ty + txm, ty: bm * A.tx + am * A.ty + tym
+                                };
+                                for (const i of r.inliers) kept.push(Q[2*i], Q[2*i+1]);
+                                ok = true;
+                            }
+                        }
+                        if (ok !== !trk.lost) { trk.lost = !ok; badge(ok ? '● Tracking paper' : 'Tracking lost – point at paper', ok ? 'bg-emerald-600/90' : 'bg-amber-600/90'); }
+                        trk.pts = kept.length >= 80 ? kept : detect();
+                        trk.curr.copyTo(trk.prev);
+                        if (ok) applyTrack();
+                    }
+                } catch (e) { console.error(e); }
+                trk.busy = false;
+            }
+            trk.raf = requestAnimationFrame(trackStep);
+        }
+
+        async function startTracking() {
+            badge('Loading tracker…');
+            try { await loadOpenCV(); }
+            catch (_) { if (state.locked) badge('Tracking unavailable – locked to screen', 'bg-amber-600/90'); return; }
+            if (!state.locked) return;
+            trk.cw = TW; trk.ch = Math.round(TW * innerHeight / innerWidth); trk.f = TW / innerWidth;
+            const c = document.createElement('canvas'); c.width = trk.cw; c.height = trk.ch;
+            trk.ctx = c.getContext('2d', { willReadFrequently: true });
+            trk.rgba = new CV.Mat(trk.ch, trk.cw, CV.CV_8UC4);
+            trk.curr = new CV.Mat(); trk.prev = new CV.Mat();
+            trk.win = new CV.Size(21, 21);
+            trk.crit = new CV.TermCriteria(CV.TermCriteria_EPS | CV.TermCriteria_COUNT, 20, 0.03);
+            if (!grabFrame()) { badge('Camera not ready', 'bg-amber-600/90'); return; }
+            trk.curr.copyTo(trk.prev);
+            trk.pts = detect();
+            trk.A = { a: 1, b: 0, tx: 0, ty: 0 };
+            trk.base = { x: state.x, y: state.y, scale: state.scale, rot: state.rot };
+            trk.lost = true; trk.on = true;
+            trk.raf = requestAnimationFrame(trackStep);
+        }
+        function stopTracking() {
+            trk.on = false; cancelAnimationFrame(trk.raf);
+            for (const k of ['rgba', 'curr', 'prev']) if (trk[k]) { trk[k].delete(); trk[k] = null; }
+            badge('');
+        }
+
         function setLocked(v) {
             if (v && !state.hasImage) { alert('Please choose an image first!'); return; }
             state.locked = v;
@@ -360,6 +533,7 @@
             $('unlockFab').classList.toggle('hidden', !v);
             $('unlockFab').classList.toggle('flex', v);
             pts.clear(); last = null;
+            if (v) startTracking(); else stopTracking();
         }
         $('lockBtn').addEventListener('click', () => setLocked(true));
         $('unlockFab').addEventListener('click', () => setLocked(false));
