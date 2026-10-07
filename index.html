@@ -1,444 +1,304 @@
 <!DOCTYPE html>
-<html lang="en" class="h-full">
+<html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>TraceLock AR - Paper-Locked Tracing Assistant</title>
-    <!-- Tailwind CSS -->
-    <script src="https://cdn.tailwindcss.com"></script>
-    <!-- FontAwesome Icons -->
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
-    <!-- Google Fonts Inter -->
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
-    <!-- OpenCV.js for Paper Detection and Homography Warping -->
-    <script src="https://docs.opencv.org/4.8.0/opencv.js" async></script>
+    <title>TraceLock AR - Paper Tracking Tracing App</title>
+    <!-- Tailwind CSS for modern mobile UI -->
+    <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4"></script>
+    <!-- OpenCV.js for real-time paper contour detection and tracking -->
+    <script async src="https://docs.opencv.org/4.8.0/opencv.js"></script>
     <style>
-        body {
-            font-family: 'Inter', sans-serif;
-            overscroll-behavior: none;
+        body, html {
+            margin: 0;
+            padding: 0;
+            width: 100%;
+            height: 100%;
+            overflow: hidden;
+            background-color: #0f172a;
+            font-family: system-ui, -apple-system, sans-serif;
             touch-action: none;
         }
-        .glass-panel {
-            background: rgba(15, 23, 42, 0.88);
-            backdrop-filter: blur(16px);
-            -webkit-backdrop-filter: blur(16px);
-            border: 1px solid rgba(255, 255, 255, 0.12);
+        #videoElement {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+            z-index: 1;
         }
-        input[type=range] {
-            accent-color: #6366f1;
+        #cvCanvas {
+            display: none;
+        }
+        #arCanvas {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            z-index: 2;
+            pointer-events: none;
+        }
+        .glass-panel {
+            background: rgba(15, 23, 42, 0.75);
+            backdrop-filter: blur(12px);
+            -webkit-backdrop-filter: blur(12px);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+        }
+        .pulse-glow {
+            animation: pulse-red 2s infinite;
+        }
+        @keyframes pulse-red {
+            0% { box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.7); }
+            70% { box-shadow: 0 0 0 12px rgba(239, 68, 68, 0); }
+            100% { box-shadow: 0 0 0 0 rgba(239, 68, 68, 0); }
         }
     </style>
 </head>
-<body class="h-full bg-slate-950 text-slate-100 overflow-hidden relative select-none">
+<body>
 
-    <!-- AR Camera & Workspace Container -->
-    <div id="workspace" class="absolute inset-0 overflow-hidden bg-black flex items-center justify-center">
-        
-        <!-- Live Rear Camera Stream -->
-        <video id="cameraStream" autoplay playsinline muted class="absolute inset-0 w-full h-full object-cover"></video>
+    <!-- Camera Feed -->
+    <video id="videoElement" autoplay playsinline muted></video>
+    
+    <!-- Hidden Canvas for OpenCV processing -->
+    <canvas id="cvCanvas"></canvas>
 
-        <!-- Hidden canvas for OpenCV frame processing -->
-        <canvas id="processingCanvas" class="hidden"></canvas>
+    <!-- AR Canvas where tracing image is warped and rendered -->
+    <canvas id="arCanvas"></canvas>
 
-        <!-- Paper Outline Guide SVG overlay (for manual or auto detection guidance) -->
-        <svg id="paperGuideSvg" class="absolute inset-0 w-full h-full pointer-events-none z-10 hidden">
-            <!-- Dynamic quad polygon for paper outline -->
-            <polygon id="paperQuad" points="" class="stroke-indigo-400 stroke-2 fill-indigo-500/10 stroke-dasharray-[6]" />
-            <!-- Corner handles for manual adjustment -->
-            <circle id="corner0" cx="0" cy="0" r="18" class="fill-indigo-600 stroke-white stroke-2 pointer-events-auto cursor-grab" />
-            <circle id="corner1" cx="0" cy="0" r="18" class="fill-indigo-600 stroke-white stroke-2 pointer-events-auto cursor-grab" />
-            <circle id="corner2" cx="0" cy="0" r="18" class="fill-indigo-600 stroke-white stroke-2 pointer-events-auto cursor-grab" />
-            <circle id="corner3" cx="0" cy="0" r="18" class="fill-indigo-600 stroke-white stroke-2 pointer-events-auto cursor-grab" />
-        </svg>
-
-        <!-- Reference Image Overlay (Locked / Warped to Paper) -->
-        <div id="imageOverlayContainer" class="absolute inset-0 pointer-events-none z-20 overflow-hidden">
-            <img id="targetImage" src="" alt="Reference Image" class="absolute max-w-none opacity-60 origin-top-left transition-opacity duration-150" style="display: none;">
+    <!-- Top Status / Header Bar -->
+    <div class="absolute top-0 left-0 right-0 z-20 p-4 flex justify-between items-center pointer-events-none">
+        <div id="statusBadge" class="glass-panel px-3 py-1.5 rounded-full text-xs font-medium text-amber-300 flex items-center gap-2 pointer-events-auto">
+            <span class="w-2 h-2 rounded-full bg-amber-400 animate-ping"></span>
+            <span id="statusText">Camera Active - Load Image to Trace</span>
         </div>
-
-        <!-- Initial Setup / Upload Modal Overlay -->
-        <div id="uploadModal" class="absolute inset-0 bg-slate-950/90 backdrop-blur-md z-50 flex flex-col items-center justify-center p-6 text-center">
-            <div class="w-20 h-20 rounded-2xl bg-indigo-600/20 border border-indigo-500/30 flex items-center justify-center mb-4 text-indigo-400 text-3xl shadow-xl shadow-indigo-600/10">
-                <i class="fa-solid fa-camera-rotate"></i>
-            </div>
-            <h1 class="text-2xl font-bold mb-2">TraceLock AR</h1>
-            <p class="text-slate-400 text-sm max-w-xs mb-6">Upload a reference drawing. The app uses your camera to lock and track the image onto your physical paper in real time.</p>
-            
-            <label class="cursor-pointer bg-indigo-600 hover:bg-indigo-500 active:scale-95 transition text-white px-8 py-4 rounded-2xl font-semibold shadow-xl shadow-indigo-600/30 flex items-center gap-3 text-base">
-                <i class="fa-solid fa-cloud-arrow-up text-lg"></i> Choose Reference Image
-                <input type="file" id="imageUpload" accept="image/*" class="hidden">
+        <div class="flex gap-2 pointer-events-auto">
+            <label class="glass-panel text-white px-3 py-1.5 rounded-full text-xs font-medium cursor-pointer flex items-center gap-1 active:scale-95 transition">
+                📂 <span>Load Image</span>
+                <input type="file" id="imageLoader" accept="image/*" class="hidden">
             </label>
-
-            <div id="cvStatus" class="mt-6 text-xs text-amber-400 font-medium flex items-center gap-2">
-                <i class="fa-solid fa-spinner animate-spin"></i> Initializing OpenCV.js & Camera...
-            </div>
-        </div>
-
-        <!-- Tracking Status Badge -->
-        <div id="trackingBadge" class="absolute top-6 left-1/2 -translate-x-1/2 glass-panel px-4 py-2 rounded-full text-xs font-semibold tracking-wide flex items-center gap-2 z-30 shadow-2xl transition-all">
-            <span id="trackingDot" class="w-2.5 h-2.5 rounded-full bg-amber-400 animate-pulse"></span>
-            <span id="trackingText">Align Paper Corners or Start Tracking</span>
-        </div>
-    </div>
-
-    <!-- Floating Control Panel -->
-    <div id="controlPanel" class="absolute bottom-6 left-4 right-4 max-w-md mx-auto glass-panel rounded-2xl p-4 shadow-2xl z-40 transition-all duration-300">
-        
-        <!-- Header -->
-        <div class="flex items-center justify-between mb-3 pb-2 border-b border-slate-800">
-            <div class="flex items-center gap-2">
-                <div class="w-3 h-3 rounded-full bg-indigo-500"></div>
-                <h2 class="font-semibold text-sm tracking-wide text-slate-200">AR Paper Tracking</h2>
-            </div>
-            <div class="flex items-center gap-2">
-                <button id="minimizeBtn" class="w-8 h-8 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 flex items-center justify-center transition">
-                    <i class="fa-solid fa-chevron-down transition-transform duration-300" id="minimizeIcon"></i>
-                </button>
-            </div>
-        </div>
-
-        <!-- Collapsible Controls Content -->
-        <div id="panelContent" class="space-y-4">
-            
-            <!-- Tracking Mode Selector -->
-            <div class="grid grid-cols-2 gap-2 p-1 bg-slate-900 rounded-xl border border-slate-800">
-                <button id="modeAutoBtn" class="py-2 px-3 rounded-lg text-xs font-semibold transition bg-indigo-600 text-white shadow">
-                    <i class="fa-solid fa-wand-magic-sparkles mr-1.5"></i> Auto Paper Detect
-                </button>
-                <button id="modeManualBtn" class="py-2 px-3 rounded-lg text-xs font-semibold transition text-slate-400 hover:text-slate-200">
-                    <i class="fa-solid fa-hand-pointer mr-1.5"></i> Manual 4-Corner
-                </button>
-            </div>
-
-            <!-- Opacity Slider -->
-            <div class="space-y-1.5">
-                <div class="flex justify-between text-xs text-slate-400 font-medium">
-                    <span>Reference Opacity</span>
-                    <span id="opacityVal">60%</span>
-                </div>
-                <input type="range" id="opacityRange" min="10" max="100" value="60" class="w-full h-2 bg-slate-800 rounded-lg appearance-none cursor-pointer">
-            </div>
-
-            <!-- Action Toolbar Grid -->
-            <div class="grid grid-cols-4 gap-2 pt-1">
-                <!-- Upload New -->
-                <label title="Change Image" class="cursor-pointer bg-slate-800 hover:bg-slate-700 active:scale-95 transition text-slate-200 py-2.5 rounded-xl flex flex-col items-center justify-center gap-1 text-xs font-medium">
-                    <i class="fa-solid fa-folder-open text-indigo-400 text-sm"></i>
-                    <span>Change</span>
-                    <input type="file" id="imageUploadSecondary" accept="image/*" class="hidden">
-                </label>
-
-                <!-- Invert Colors -->
-                <button id="invertBtn" title="Invert Colors" class="bg-slate-800 hover:bg-slate-700 active:scale-95 transition text-slate-200 py-2.5 rounded-xl flex flex-col items-center justify-center gap-1 text-xs font-medium">
-                    <i class="fa-solid fa-circle-half-stroke text-sky-400 text-sm"></i>
-                    <span>Invert</span>
-                </button>
-
-                <!-- Grayscale -->
-                <button id="grayscaleBtn" title="Grayscale Filter" class="bg-slate-800 hover:bg-slate-700 active:scale-95 transition text-slate-200 py-2.5 rounded-xl flex flex-col items-center justify-center gap-1 text-xs font-medium">
-                    <i class="fa-solid fa-palette text-purple-400 text-sm"></i>
-                    <span>B&W</span>
-                </button>
-
-                <!-- Reset Corners -->
-                <button id="resetCornersBtn" title="Reset Corners" class="bg-slate-800 hover:bg-slate-700 active:scale-95 transition text-slate-200 py-2.5 rounded-xl flex flex-col items-center justify-center gap-1 text-xs font-medium">
-                    <i class="fa-solid fa-rotate-left text-amber-400 text-sm"></i>
-                    <span>Reset</span>
-                </button>
-            </div>
-
-            <!-- Main Lock / Track Toggle Button -->
-            <button id="toggleTrackBtn" class="w-full py-3.5 px-4 rounded-xl font-bold flex items-center justify-center gap-3 transition-all shadow-lg bg-indigo-600 hover:bg-indigo-500 active:scale-[0.98] text-white shadow-indigo-600/30">
-                <i class="fa-solid fa-lock-open text-lg" id="trackIcon"></i>
-                <span id="trackText">Start Paper Lock Tracking</span>
+            <button id="toggleCamBtn" class="glass-panel text-white p-2 rounded-full text-xs active:scale-95 transition" title="Switch Camera">
+                🔄
             </button>
         </div>
     </div>
 
-    <!-- Application Script Logic -->
+    <!-- Manual Calibration Overlay (If auto paper detection needs helper) -->
+    <div id="calibrationOverlay" class="absolute inset-0 z-15 bg-black/40 backdrop-blur-xs hidden flex flex-col items-center justify-center p-6 text-center">
+        <div class="glass-panel p-6 rounded-2xl max-w-sm w-full text-white space-y-4">
+            <h3 class="text-lg font-bold">Manual Paper Corner Setup</h3>
+            <p class="text-xs text-slate-300">Tap the 4 corners of your physical paper in order: <br><b>Top-Left → Top-Right → Bottom-Right → Bottom-Left</b></p>
+            <div id="cornerStepIndicator" class="text-xs font-semibold text-cyan-400">Step 1: Tap Top-Left Corner</div>
+            <button id="cancelCalibration" class="w-full bg-slate-700 py-2 rounded-xl text-xs font-medium">Cancel</button>
+        </div>
+    </div>
+
+    <!-- Bottom Interactive Control Dock -->
+    <div class="absolute bottom-0 left-0 right-0 z-20 p-4 pb-8 flex flex-col gap-3 pointer-events-none">
+        
+        <!-- Adjustment Sliders Panel -->
+        <div class="glass-panel rounded-2xl p-4 text-white space-y-3 pointer-events-auto max-w-md mx-auto w-full shadow-2xl">
+            <div class="flex justify-between items-center text-xs">
+                <span class="font-semibold text-slate-300">Image Opacity</span>
+                <span id="opacityVal">60%</span>
+            </div>
+            <input type="range" id="opacitySlider" min="0.05" max="1" step="0.05" value="0.6" class="w-full accent-cyan-500 cursor-pointer">
+
+            <div class="flex items-center justify-between pt-2 border-t border-slate-700/60">
+                <div class="flex gap-1.5">
+                    <button id="invertBtn" class="bg-slate-800 hover:bg-slate-700 px-3 py-1.5 rounded-xl text-xs font-medium transition active:scale-95">Invert 🌓</button>
+                    <button id="grayscaleBtn" class="bg-slate-800 hover:bg-slate-700 px-3 py-1.5 rounded-xl text-xs font-medium transition active:scale-95">B&W 👁️</button>
+                    <button id="resetTransformBtn" class="bg-slate-800 hover:bg-slate-700 px-3 py-1.5 rounded-xl text-xs font-medium transition active:scale-95">Reset ↺</button>
+                </div>
+                <button id="manualCalibrateBtn" class="bg-slate-800 text-cyan-300 px-3 py-1.5 rounded-xl text-xs font-medium transition active:scale-95">Manual Corners 📐</button>
+            </div>
+        </div>
+
+        <!-- Main Action: Lock to Paper Toggle -->
+        <div class="max-w-md mx-auto w-full pointer-events-auto">
+            <button id="lockPaperBtn" class="w-full py-3.5 px-6 rounded-2xl font-bold text-sm bg-gradient-to-r from-emerald-600 to-teal-600 text-white shadow-xl shadow-emerald-900/30 flex items-center justify-center gap-2 active:scale-98 transition">
+                <span id="lockIcon">🔒</span> <span id="lockBtnText">Lock to Paper (Auto AR Tracking)</span>
+            </button>
+        </div>
+    </div>
+
+    <!-- Application Script -->
     <script>
-        let state = {
-            opencvReady: false,
-            trackingActive: false,
-            trackingMode: 'auto', // 'auto' or 'manual'
-            opacity: 0.6,
-            isInverted: false,
-            isGrayscale: false,
-            minimized: false,
-            imageLoaded: false
-        };
+        const video = document.getElementById('videoElement');
+        const arCanvas = document.getElementById('arCanvas');
+        const ctx = arCanvas.getContext('2d');
+        const cvCanvas = document.getElementById('cvCanvas');
+        const cvCtx = cvCanvas.getContext('2d');
 
-        // 4 Paper Corners in screen coordinates
-        let corners = [
-            { x: 100, y: 150 }, // Top-Left
-            { x: 300, y: 150 }, // Top-Right
-            { x: 300, y: 450 }, // Bottom-Right
-            { x: 100, y: 450 }  // Bottom-Left
+        let currentFacingMode = 'environment';
+        let stream = null;
+
+        // Image & Transformation state
+        let loadedImg = null;
+        let opacity = 0.6;
+        let isInverted = false;
+        let isGrayscale = false;
+
+        // Manual or Tracked 4-Corner AR Quad [TL, TR, BR, BL]
+        // Default to center screen box if uncalibrated
+        let quad = [
+            {x: 100, y: 150},
+            {x: 300, y: 150},
+            {x: 300, y: 450},
+            {x: 100, y: 450}
         ];
+        let isLockedToPaper = false;
+        let manualCorners = [];
+        let isManualCalibrating = false;
 
-        let activeCornerIndex = null;
-        let referenceImage = null;
-        let videoWidth = 640;
-        let videoHeight = 480;
+        // Touch Interaction State (when not locked)
+        let isDragging = false;
+        let startX = 0, startY = 0;
+        let initialPinchDist = null;
 
-        // DOM elements
-        const video = document.getElementById('cameraStream');
-        const processingCanvas = document.getElementById('processingCanvas');
-        const pCtx = processingCanvas.getContext('2d');
-        const uploadModal = document.getElementById('uploadModal');
-        const cvStatus = document.getElementById('cvStatus');
-        const targetImage = document.getElementById('targetImage');
-        const paperGuideSvg = document.getElementById('paperGuideSvg');
-        const paperQuad = document.getElementById('paperQuad');
-        const trackingBadge = document.getElementById('trackingBadge');
-        const trackingDot = document.getElementById('trackingDot');
-        const trackingText = document.getElementById('trackingText');
-        const toggleTrackBtn = document.getElementById('toggleTrackBtn');
-        const trackIcon = document.getElementById('trackIcon');
-        const trackText = document.getElementById('trackText');
-        const opacityRange = document.getElementById('opacityRange');
-        const opacityVal = document.getElementById('opacityVal');
-        const modeAutoBtn = document.getElementById('modeAutoBtn');
-        const modeManualBtn = document.getElementById('modeManualBtn');
-        const resetCornersBtn = document.getElementById('resetCornersBtn');
-        const invertBtn = document.getElementById('invertBtn');
-        const grayscaleBtn = document.getElementById('grayscaleBtn');
-        const minimizeBtn = document.getElementById('minimizeBtn');
-        const minimizeIcon = document.getElementById('minimizeIcon');
-        const panelContent = document.getElementById('panelContent');
-        const controlPanel = document.getElementById('controlPanel');
-
+        // Initialize Camera
         async function initCamera() {
+            if (stream) {
+                stream.getTracks().forEach(track => track.stop());
+            }
             try {
-                const stream = await navigator.mediaDevices.getUserMedia({
-                    video: { facingMode: 'environment', width: { ideal: 1280 }, height: { ideal: 720 } },
+                stream = await navigator.mediaDevices.getUserMedia({
+                    video: { facingMode: currentFacingMode, width: { ideal: 1280 }, height: { ideal: 720 } },
                     audio: false
                 });
                 video.srcObject = stream;
-                await new Promise((resolve) => {
-                    video.onloadedmetadata = () => {
-                        video.play();
-                        videoWidth = video.videoWidth || 640;
-                        videoHeight = video.videoHeight || 480;
-                        processingCanvas.width = videoWidth;
-                        processingCanvas.height = videoHeight;
-                        setupInitialCorners();
-                        resolve();
-                    };
-                });
+                await video.play();
+                resizeCanvases();
             } catch (err) {
-                console.error("Camera access error:", err);
-                cvStatus.innerHTML = '<span class="text-rose-400"><i class="fa-solid fa-triangle-exclamation"></i> Camera permission required for AR paper tracking.</span>';
+                alert("Camera access error: " + err.message);
             }
         }
 
-        // OpenCV ready callback check
-        window.onOpenCvReady = function() {
-            state.opencvReady = true;
-            cvStatus.innerHTML = '<span class="text-emerald-400"><i class="fa-solid fa-circle-check"></i> OpenCV.js Ready! Choose an image.</span>';
-        };
+        function resizeCanvases() {
+            arCanvas.width = window.innerWidth;
+            arCanvas.height = window.innerHeight;
+            cvCanvas.width = 320; // low res for fast OpenCV processing
+            cvCanvas.height = 240;
 
-        // Fallback check if cv is loaded already
-        let cvCheckTimer = setInterval(() => {
-            if (typeof cv !== 'undefined' && cv.Mat) {
-                clearInterval(cvCheckTimer);
-                window.onOpenCvReady();
-            }
-        }, 500);
-
-        function setupInitialCorners() {
-            const sw = window.innerWidth;
-            const sh = window.innerHeight;
-            const w = Math.min(sw * 0.7, 400);
-            const h = Math.min(sh * 0.6, 550);
-            const cx = sw / 2;
-            const cy = sh / 2;
-
-            corners = [
-                { x: cx - w/2, y: cy - h/2 },
-                { x: cx + w/2, y: cy - h/2 },
-                { x: cx + w/2, y: cy + h/2 },
-                { x: cx - w/2, y: cy + h/2 }
-            ];
-            updateCornerElements();
-        }
-
-        function updateCornerElements() {
-            const pointsStr = corners.map(c => `${c.x},${c.y}`).join(' ');
-            paperQuad.setAttribute('points', pointsStr);
-            for (let i = 0; i < 4; i++) {
-                const circle = document.getElementById(`corner${i}`);
-                circle.setAttribute('cx', corners[i].x);
-                circle.setAttribute('cy', corners[i].y);
+            if (!isLockedToPaper && loadedImg) {
+                // Initialize default box in center
+                let w = Math.min(window.innerWidth * 0.7, 300);
+                let h = w * (loadedImg.height / loadedImg.width);
+                let cx = (window.innerWidth - w) / 2;
+                let cy = (window.innerHeight - h) / 2;
+                quad = [
+                    {x: cx, y: cy},
+                    {x: cx + w, y: cy},
+                    {x: cx + w, y: cy + h},
+                    {x: cx, y: cy + h}
+                ];
             }
         }
 
-        function handleImageUpload(e) {
+        window.addEventListener('resize', resizeCanvases);
+
+        // Load Sample or User Image
+        const imageLoader = document.getElementById('imageLoader');
+        imageLoader.addEventListener('change', (e) => {
             const file = e.target.files[0];
             if (!file) return;
-
             const reader = new FileReader();
             reader.onload = function(event) {
-                targetImage.src = event.target.result;
-                targetImage.onload = () => {
-                    referenceImage = targetImage;
-                    state.imageLoaded = true;
-                    targetImage.style.display = 'block';
-                    uploadModal.classList.add('hidden');
-                    paperGuideSvg.classList.remove('hidden');
-                    updateCornerElements();
-                };
-            };
+                const img = new Image();
+                img.onload = function() {
+                    loadedImg = img;
+                    resizeCanvases();
+                    document.getElementById('statusText').textContent = "Image Loaded. Drag to position or Lock to Paper.";
+                }
+                img.src = event.target.result;
+            }
             reader.readAsDataURL(file);
-        }
+        });
 
-        document.getElementById('imageUpload').addEventListener('change', handleImageUpload);
-        document.getElementById('imageUploadSecondary').addEventListener('change', handleImageUpload);
+        // Touch & Gesture controls for moving/scaling/rotating when unlocked
+        arCanvas.addEventListener('pointerdown', (e) => {
+            if (isLockedToPaper || isManualCalibrating || !loadedImg) return;
+            isDragging = true;
+            startX = e.clientX;
+            startY = e.clientY;
+        });
 
-        for (let i = 0; i < 4; i++) {
-            const circle = document.getElementById(`corner${i}`);
-            circle.addEventListener('pointerdown', (e) => {
-                activeCornerIndex = i;
-                circle.setPointerCapture(e.pointerId);
-                e.stopPropagation();
+        arCanvas.addEventListener('pointermove', (e) => {
+            if (!isDragging || isLockedToPaper || isManualCalibrating) return;
+            let dx = e.clientX - startX;
+            let dy = e.clientY - startY;
+            startX = e.clientX;
+            startY = e.clientY;
+
+            // Shift all quad points
+            quad.forEach(pt => {
+                pt.x += dx;
+                pt.y += dy;
             });
-            circle.addEventListener('pointermove', (e) => {
-                if (activeCornerIndex === i) {
-                    corners[i].x = e.clientX;
-                    corners[i].y = e.clientY;
-                    updateCornerElements();
-                    if (!state.trackingActive) {
-                        applyWarpTransformation();
-                    }
-                    e.stopPropagation();
-                }
-            });
-            circle.addEventListener('pointerup', (e) => {
-                if (activeCornerIndex === i) {
-                    activeCornerIndex = null;
-                    try { circle.releasePointerCapture(e.pointerId); } catch(err){}
-                }
-            });
-        }
+        });
 
-        function applyWarpTransformation() {
-            if (!state.imageLoaded || !referenceImage) return;
+        arCanvas.addEventListener('pointerup', () => { isDragging = false; });
+        arCanvas.addEventListener('pointercancel', () => { isDragging = false; });
 
-            // Compute CSS 3D matrix or SVG transform / 4-point CSS perspective approximation
-            // For robust fluid web rendering, we map the reference image inside the 4 corner quadrilateral using CSS matrix3d or direct canvas warping.
-            // Let's compute matrix3d projection from natural image rect to current `corners` quad.
-            const imgW = referenceImage.naturalWidth || 400;
-            const imgH = referenceImage.naturalHeight || 500;
-
-            // Source rectangle
-            const srcPoints = [
-                { x: 0, y: 0 },
-                { x: imgW, y: 0 },
-                { x: imgW, y: imgH },
-                { x: 0, y: imgH }
-            ];
-
-            // If OpenCV is ready and in auto mode or tracking, we can refine corners or use homography matrix
-            if (state.opencvReady && state.trackingActive && state.trackingMode === 'auto') {
-                detectPaperAutomatically();
+        // Pinch to zoom and rotate using touch events
+        arCanvas.addEventListener('touchstart', (e) => {
+            if (e.touches.length === 2 && !isLockedToPaper && loadedImg) {
+                initialPinchDist = Math.hypot(
+                    e.touches[0].clientX - e.touches[1].clientX,
+                    e.touches[0].clientY - e.touches[1].clientY
+                );
             }
+        });
 
-            // Compute CSS matrix3d mapping src -> dst (corners)
-            const m = computeMatrix3D(srcPoints, corners);
-            targetImage.style.width = imgW + 'px';
-            targetImage.style.height = imgH + 'px';
-            targetImage.style.transformOrigin = '0 0';
-            targetImage.style.transform = m;
-        }
+        arCanvas.addEventListener('touchmove', (e) => {
+            if (e.touches.length === 2 && initialPinchDist && !isLockedToPaper && loadedImg) {
+                let dist = Math.hypot(
+                    e.touches[0].clientX - e.touches[1].clientX,
+                    e.touches[0].clientY - e.touches[1].clientY
+                );
+                let factor = dist / initialPinchDist;
+                initialPinchDist = dist;
 
-        // Helper to solve homography and generate CSS matrix3d string
-        function computeMatrix3D(src, dst) {
-            // Standard perspective transform calculation using 4 point correspondence
-            // Returns CSS matrix3d(...) string
-            if (typeof cv === 'undefined' || !state.opencvReady) {
-                // Fallback simple affine/translate transform if OpenCV not yet initialized
-                const dx = corners[0].x;
-                const dy = corners[0].y;
-                const scaleX = (corners[1].x - corners[0].x) / src[1].x;
-                return `translate(${dx}px, ${dy}px) scale(${scaleX})`;
+                // Scale quad relative to center
+                let cx = (quad[0].x + quad[2].x) / 2;
+                let cy = (quad[0].y + quad[2].y) / 2;
+                quad.forEach(pt => {
+                    pt.x = cx + (pt.x - cx) * factor;
+                    pt.y = cy + (pt.y - cy) * factor;
+                });
             }
+        });
 
-            let srcMat = cv.matFromJSArray(4, 2, cv.CV_32F, [
-                src[0].x, src[0].y,
-                src[1].x, src[1].y,
-                src[2].x, src[2].y,
-                src[3].x, src[3].y
-            ]);
-            let dstMat = cv.matFromJSArray(4, 2, cv.CV_32F, [
-                dst[0].x, dst[0].y,
-                dst[1].x, dst[1].y,
-                dst[2].x, dst[2].y,
-                dst[3].x, dst[3].y
-            ]);
+        // OpenCV Paper Contour Tracking Loop
+        function updateOpenCVPaperTracking() {
+            if (!isLockedToPaper || !window.cv || !cv.Mat) return;
 
-            let H = cv.getPerspectiveTransform(srcMat, dstMat);
-            
-            // Extract 3x3 float data
-            let h = [];
-            for (let i = 0; i < 9; i++) {
-                h.push(H.data32F[i]);
-            }
-
-            srcMat.delete();
-            dstMat.delete();
-            H.delete();
-
-            // CSS matrix3d takes column-major order:
-            // [ a1, b1, c1, d1,  a2, b2, c2, d2,  a3, b3, c3, d3,  a4, b4, c4, d4 ]
-            // H mapping:
-            // x' = (h0*x + h1*y + h2) / (h6*x + h7*y + h8)
-            // y' = (h3*x + h4*y + h5) / (h6*x + h7*y + h8)
-            // In column-major 3d matrix for 2D plane:
-            const h0 = h[0], h1 = h[1], h2 = h[2];
-            const h3 = h[3], h4 = h[4], h5 = h[5];
-            const h6 = h[6], h7 = h[7], h8 = h[8];
-
-            return `matrix3d(` +
-                `${h0}, ${h3}, 0, ${h6}, ` +
-                `${h1}, ${h4}, 0, ${h7}, ` +
-                `0, 0, 1, 0, ` +
-                `${h2}, ${h5}, 0, ${h8}` +
-            `)`;
-        }
-
-        function detectPaperAutomatically() {
-            if (!state.opencvReady) return;
             try {
-                pCtx.drawImage(video, 0, 0, videoWidth, videoHeight);
-                let src = cv.imread(processingCanvas);
+                cvCtx.drawImage(video, 0, 0, cvCanvas.width, cvCanvas.height);
+                let src = cv.imread(cvCanvas);
                 let gray = new cv.Mat();
-                cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY);
-                
-                // Gaussian blur to reduce noise
                 let blurred = new cv.Mat();
-                let ksize = new cv.Size(5, 5);
-                cv.GaussianBlur(gray, blurred, ksize, 0);
+                let thresh = new cv.Mat();
 
-                // Canny edge detection
-                let edged = new cv.Mat();
-                cv.Canny(blurred, edged, 75, 200);
+                cv.cvtColor(src, gray, cv.COLOR.RGBA2GRAY);
+                cv.GaussianBlur(gray, blurred, new cv.Size(5, 5), 0);
+                cv.adaptiveThreshold(blurred, thresh, 255, cv.ADAPTIVE_THRESH_GAUSSIAN_C, cv.THRESH_BINARY, 11, 2);
 
-                // Find contours
                 let contours = new cv.MatVector();
                 let hierarchy = new cv.Mat();
-                cv.findContours(edged, contours, hierarchy, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE);
+                cv.findContours(thresh, contours, hierarchy, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE);
 
                 let maxArea = 0;
                 let bestApprox = null;
 
-                for (let i = 0; i < contours.size(); i++) {
+                for (let i = 0; i < contours.size(); ++i) {
                     let cnt = contours.get(i);
                     let area = cv.contourArea(cnt);
-                    if (area > (videoWidth * videoHeight * 0.15)) { // paper must take at least 15% of frame
+                    if (area > (cvCanvas.width * cvCanvas.height * 0.15)) { // paper takes >15% of frame
                         let peri = cv.arcLength(cnt, true);
                         let approx = new cv.Mat();
                         cv.approxPolyDP(cnt, approx, 0.02 * peri, true);
-
                         if (approx.rows === 4 && area > maxArea) {
                             maxArea = area;
                             if (bestApprox) bestApprox.delete();
@@ -450,122 +310,202 @@
                     cnt.delete();
                 }
 
-                if (bestApprox) {
-                    // Scale points from video resolution to screen resolution
-                    const scaleX = window.innerWidth / videoWidth;
-                    const scaleY = window.innerHeight / videoHeight;
-
-                    corners[0] = { x: bestApprox.data32S[0] * scaleX, y: bestApprox.data32S[1] * scaleY };
-                    corners[1] = { x: bestApprox.data32S[2] * scaleX, y: bestApprox.data32S[3] * scaleY };
-                    corners[2] = { x: bestApprox.data32S[4] * scaleX, y: bestApprox.data32S[5] * scaleY };
-                    corners[3] = { x: bestApprox.data32S[6] * scaleX, y: bestApprox.data32S[7] * scaleY };
+                if (bestApprox && maxArea > 0) {
+                    let scaleX = window.innerWidth / cvCanvas.width;
+                    let scaleY = window.innerHeight / cvCanvas.height;
                     
-                    updateCornerElements();
+                    let pts = [];
+                    for (let i = 0; i < 4; i++) {
+                        pts.push({
+                            x: bestApprox.data32S[i * 2] * scaleX,
+                            y: bestApprox.data32S[i * 2 + 1] * scaleY
+                        });
+                    }
+                    // Smooth tracking transition (Lerp)
+                    for (let i = 0; i < 4; i++) {
+                        quad[i].x += (pts[i].x - quad[i].x) * 0.3;
+                        quad[i].y += (pts[i].y - quad[i].y) * 0.3;
+                    }
                     bestApprox.delete();
-                    
-                    trackingDot.className = "w-2.5 h-2.5 rounded-full bg-emerald-400";
-                    trackingText.textContent = "Paper Locked & Tracking (Auto)";
-                } else {
-                    trackingDot.className = "w-2.5 h-2.5 rounded-full bg-amber-400 animate-pulse";
-                    trackingText.textContent = "Searching for Paper... Hold steady";
                 }
 
-                src.delete(); gray.delete(); blurred.delete(); edged.delete(); contours.delete(); hierarchy.delete();
+                src.delete(); gray.delete(); blurred.delete(); thresh.delete(); contours.delete(); hierarchy.delete();
             } catch (err) {
-                console.error("OpenCV processing error:", err);
+                console.error("OpenCV tracking error:", err);
             }
         }
 
-        function trackingLoop() {
-            if (state.trackingActive) {
-                applyWarpTransformation();
+        // Manual Corner Tap Handler
+        arCanvas.addEventListener('click', (e) => {
+            if (!isManualCalibrating) return;
+            manualCorners.push({x: e.clientX, y: e.clientY});
+            if (manualCorners.length === 1) {
+                document.getElementById('cornerStepIndicator').textContent = "Step 2: Tap Top-Right Corner";
+            } else if (manualCorners.length === 2) {
+                document.getElementById('cornerStepIndicator').textContent = "Step 3: Tap Bottom-Right Corner";
+            } else if (manualCorners.length === 3) {
+                document.getElementById('cornerStepIndicator').textContent = "Step 4: Tap Bottom-Left Corner";
+            } else if (manualCorners.length === 4) {
+                quad = [...manualCorners];
+                isManualCalibrating = false;
+                document.getElementById('calibrationOverlay').classList.add('hidden');
+                isLockedToPaper = true;
+                updateLockUI(true);
+                manualCorners = [];
             }
-            requestAnimationFrame(trackingLoop);
-        }
-        requestAnimationFrame(trackingLoop);
+        });
 
-        toggleTrackBtn.addEventListener('click', () => {
-            state.trackingActive = !state.trackingActive;
-            if (state.trackingActive) {
-                toggleTrackBtn.className = "w-full py-3.5 px-4 rounded-xl font-bold flex items-center justify-center gap-3 transition-all shadow-xl bg-rose-600 hover:bg-rose-500 active:scale-[0.98] text-white shadow-rose-600/40 ring-4 ring-rose-500/30";
-                trackIcon.className = "fa-solid fa-lock text-lg";
-                trackText.textContent = "Stop Paper Tracking";
-                trackingBadge.classList.add('ring-2', 'ring-emerald-500/50');
+        // Render Loop (Draws AR Tracing Overlay)
+        function renderLoop() {
+            ctx.clearRect(0, 0, arCanvas.width, arCanvas.height);
+
+            if (isLockedToPaper) {
+                updateOpenCVPaperTracking();
+            }
+
+            if (loadedImg) {
+                ctx.save();
+                ctx.globalAlpha = opacity;
+
+                // Apply filters if enabled
+                let filters = [];
+                if (isInverted) filters.push('invert(100%)');
+                if (isGrayscale) filters.push('grayscale(100%)');
+                if (filters.length > 0) ctx.filter = filters.join(' ');
+
+                // Simple Bilinear / Quad Warping approximation for tracing overlay
+                drawImageQuad(ctx, loadedImg, quad);
+                ctx.restore();
+            }
+
+            // Draw Quad Guide Border if unlocked or calibrating
+            if (!isLockedToPaper || isManualCalibrating) {
+                ctx.strokeStyle = isManualCalibrating ? '#38bdf8' : 'rgba(56, 189, 248, 0.6)';
+                ctx.lineWidth = 2;
+                ctx.setLineDash([6, 6]);
+                ctx.beginPath();
+                ctx.moveTo(quad[0].x, quad[0].y);
+                for (let i = 1; i < 4; i++) ctx.lineTo(quad[i].x, quad[i].y);
+                ctx.closePath();
+                ctx.stroke();
+                ctx.setLineDash([]);
+
+                // Draw corner handles
+                quad.forEach((pt, idx) => {
+                    ctx.fillStyle = '#38bdf8';
+                    ctx.beginPath();
+                    ctx.arc(pt.x, pt.y, 8, 0, Math.PI * 2);
+                    ctx.fill();
+                });
+            }
+
+            requestAnimationFrame(renderLoop);
+        }
+
+        // Helper to draw image mapped across 4 quad points
+        function drawImageQuad(ctx, img, q) {
+            // High-performance subdivision mesh rendering for smooth perspective warp
+            const steps = 10;
+            for (let i = 0; i < steps; i++) {
+                for (let j = 0; j < steps; j++) {
+                    let u0 = i / steps, v0 = j / steps;
+                    let u1 = (i + 1) / steps, v1 = (j + 1) / steps;
+
+                    let p0 = getQuadPoint(q, u0, v0);
+                    let p1 = getQuadPoint(q, u1, v0);
+                    let p2 = getQuadPoint(q, u1, v1);
+                    let p3 = getQuadPoint(q, u0, v1);
+
+                    let imgW = img.width, imgH = img.height;
+                    
+                    ctx.save();
+                    ctx.beginPath();
+                    ctx.moveTo(p0.x, p0.y);
+                    ctx.lineTo(p1.x, p1.y);
+                    ctx.lineTo(p2.x, p2.y);
+                    ctx.lineTo(p3.x, p3.y);
+                    ctx.closePath();
+                    ctx.clip();
+
+                    // Affine approximation per cell
+                    let dx0 = p1.x - p0.x, dy0 = p1.y - p0.y;
+                    let dx1 = p3.x - p0.x, dy1 = p3.y - p0.y;
+
+                    ctx.transform(
+                        dx0 / (u1 - u0) / imgW, dy0 / (u1 - u0) / imgW,
+                        dx1 / (v1 - v0) / imgH, dy1 / (v1 - v0) / imgH,
+                        p0.x - (u0 * dx0 / (u1 - u0) + v0 * dx1 / (v1 - v0)),
+                        p0.y - (u0 * dy0 / (u1 - u0) + v0 * dy1 / (v1 - v0))
+                    );
+
+                    ctx.drawImage(img, 0, 0);
+                    ctx.restore();
+                }
+            }
+        }
+
+        function getQuadPoint(q, u, v) {
+            // Bilinear interpolation across quad
+            let x = (1 - u) * (1 - v) * q[0].x + u * (1 - v) * q[1].x + u * v * q[2].x + (1 - u) * v * q[3].x;
+            let y = (1 - u) * (1 - v) * q[0].y + u * (1 - v) * q[1].y + u * v * q[2].y + (1 - u) * v * q[3].y;
+            return {x, y};
+        }
+
+        // UI Event Listeners
+        const opacitySlider = document.getElementById('opacitySlider');
+        opacitySlider.addEventListener('input', (e) => {
+            opacity = parseFloat(e.target.value);
+            document.getElementById('opacityVal').textContent = Math.round(opacity * 100) + '%';
+        });
+
+        document.getElementById('invertBtn').addEventListener('click', () => { isInverted = !isInverted; });
+        document.getElementById('grayscaleBtn').addEventListener('click', () => { isGrayscale = !isGrayscale; });
+        document.getElementById('resetTransformBtn').addEventListener('click', () => { resizeCanvases(); });
+
+        const lockPaperBtn = document.getElementById('lockPaperBtn');
+        lockPaperBtn.addEventListener('click', () => {
+            isLockedToPaper = !isLockedToPaper;
+            updateLockUI(isLockedToPaper);
+        });
+
+        function updateLockUI(locked) {
+            const statusBadge = document.getElementById('statusBadge');
+            const statusText = document.getElementById('statusText');
+            if (locked) {
+                lockPaperBtn.className = "w-full py-3.5 px-6 rounded-2xl font-bold text-sm bg-gradient-to-r from-red-600 to-rose-600 text-white shadow-xl shadow-red-900/30 flex items-center justify-center gap-2 pulse-glow active:scale-98 transition";
+                document.getElementById('lockIcon').textContent = "🔓";
+                document.getElementById('lockBtnText').textContent = "Unlock / Free Position";
+                statusBadge.className = "glass-panel px-3 py-1.5 rounded-full text-xs font-medium text-emerald-300 flex items-center gap-2 pointer-events-auto border border-emerald-500/30";
+                statusText.textContent = "🔒 Locked to Paper (AR Tracking Active)";
             } else {
-                toggleTrackBtn.className = "w-full py-3.5 px-4 rounded-xl font-bold flex items-center justify-center gap-3 transition-all shadow-lg bg-indigo-600 hover:bg-indigo-500 active:scale-[0.98] text-white shadow-indigo-600/30";
-                trackIcon.className = "fa-solid fa-lock-open text-lg";
-                trackText.textContent = "Start Paper Lock Tracking";
-                trackingDot.className = "w-2.5 h-2.5 rounded-full bg-amber-400";
-                trackingText.textContent = "Tracking Paused (Manual Adjust)";
-                trackingBadge.classList.remove('ring-2', 'ring-emerald-500/50');
+                lockPaperBtn.className = "w-full py-3.5 px-6 rounded-2xl font-bold text-sm bg-gradient-to-r from-emerald-600 to-teal-600 text-white shadow-xl shadow-emerald-900/30 flex items-center justify-center gap-2 active:scale-98 transition";
+                document.getElementById('lockIcon').textContent = "🔒";
+                document.getElementById('lockBtnText').textContent = "Lock to Paper (Auto AR Tracking)";
+                statusBadge.className = "glass-panel px-3 py-1.5 rounded-full text-xs font-medium text-amber-300 flex items-center gap-2 pointer-events-auto";
+                statusText.textContent = "Adjust position freely or Lock to Paper";
             }
-        });
-
-        // Mode switches
-        modeAutoBtn.addEventListener('click', () => {
-            state.trackingMode = 'auto';
-            modeAutoBtn.className = "py-2 px-3 rounded-lg text-xs font-semibold transition bg-indigo-600 text-white shadow";
-            modeManualBtn.className = "py-2 px-3 rounded-lg text-xs font-semibold transition text-slate-400 hover:text-slate-200";
-        });
-
-        modeManualBtn.addEventListener('click', () => {
-            state.trackingMode = 'manual';
-            state.trackingActive = false; // Pause auto tracking
-            modeManualBtn.className = "py-2 px-3 rounded-lg text-xs font-semibold transition bg-indigo-600 text-white shadow";
-            modeAutoBtn.className = "py-2 px-3 rounded-lg text-xs font-semibold transition text-slate-400 hover:text-slate-200";
-            trackIcon.className = "fa-solid fa-lock-open text-lg";
-            trackText.textContent = "Start Paper Lock Tracking";
-            trackingText.textContent = "Manual 4-Corner Adjustment Mode";
-        });
-
-        // Opacity slider
-        opacityRange.addEventListener('input', (e) => {
-            state.opacity = e.target.value / 100;
-            targetImage.style.opacity = state.opacity;
-            opacityVal.textContent = e.target.value + '%';
-        });
-
-        // Reset corners
-        resetCornersBtn.addEventListener('click', setupInitialCorners);
-
-        // Filters
-        invertBtn.addEventListener('click', () => {
-            state.isInverted = !state.isInverted;
-            updateFilters();
-            invertBtn.classList.toggle('bg-indigo-900/50', state.isInverted);
-            invertBtn.classList.toggle('border', state.isInverted);
-            invertBtn.classList.toggle('border-indigo-500', state.isInverted);
-        });
-
-        grayscaleBtn.addEventListener('click', () => {
-            state.isGrayscale = !state.isGrayscale;
-            updateFilters();
-            grayscaleBtn.classList.toggle('bg-indigo-900/50', state.isGrayscale);
-            grayscaleBtn.classList.toggle('border', state.isGrayscale);
-            grayscaleBtn.classList.toggle('border-indigo-500', state.isGrayscale);
-        });
-
-        function updateFilters() {
-            let filters = [];
-            if (state.isInverted) filters.push('invert(100%)');
-            if (state.isGrayscale) filters.push('grayscale(100%)');
-            targetImage.style.filter = filters.join(' ');
         }
 
-        // Minimize panel
-        minimizeBtn.addEventListener('click', () => {
-            state.minimized = !state.minimized;
-            if (state.minimized) {
-                panelContent.classList.add('hidden');
-                minimizeIcon.style.transform = 'rotate(180deg)';
-            } else {
-                panelContent.classList.remove('hidden');
-                minimizeIcon.style.transform = 'rotate(0deg)';
-            }
+        document.getElementById('manualCalibrateBtn').addEventListener('click', () => {
+            isManualCalibrating = true;
+            manualCorners = [];
+            document.getElementById('calibrationOverlay').classList.remove('hidden');
+            document.getElementById('cornerStepIndicator').textContent = "Step 1: Tap Top-Left Corner";
         });
 
-        // Initialize camera on load
-        window.addEventListener('load', initCamera);
+        document.getElementById('cancelCalibration').addEventListener('click', () => {
+            isManualCalibrating = false;
+            document.getElementById('calibrationOverlay').classList.add('hidden');
+        });
+
+        document.getElementById('toggleCamBtn').addEventListener('click', () => {
+            currentFacingMode = currentFacingMode === 'environment' ? 'user' : 'environment';
+            initCamera();
+        });
+
+        // Start everything
+        initCamera();
+        requestAnimationFrame(renderLoop);
     </script>
 </body>
 </html>
